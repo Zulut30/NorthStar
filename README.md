@@ -30,6 +30,7 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Lightweight browser performance snapshot in Settings: tab count, loading tabs, app memory, average load time, and recent page timings.
 - Always-on ad blocking with WebKit content rules, host blocking, and DOM cleanup for injected ad containers.
 - Safari-like user agent to reduce search-engine bot challenges from custom WebKit fingerprints.
+- Current-page parser report that extracts JSON, Markdown, visible text, links, headings, images, and bounded HTML from the already-loaded page.
 - Theme picker for System, Light, and Dark.
 - Per-tab network modes: System, Private, Tor SOCKS, and Localhost.
 - New-window handling opens links into a new NorthStar tab instead of losing context.
@@ -77,6 +78,7 @@ When a tab's network mode changes, NorthStar recreates that tab's `WKWebView` wi
 | `Shift-Command-W` | Close window |
 | `Command-L` | Focus address bar |
 | `Command-R` | Reload or stop loading |
+| `Option-Command-P` | Open current-page parser report |
 | `Command-[` | Back |
 | `Command-]` | Forward |
 | `Shift-Command-[` | Previous tab |
@@ -162,6 +164,7 @@ Core pieces:
 - `AppPreferences` stores theme, search engine, and tab placement in `UserDefaults`.
 - `BrowserHistoryStore` and `DownloadHistoryStore` persist local history lists in `UserDefaults`.
 - `PerformanceMonitor` records recent page load timings and snapshots current app memory only when settings are rendered.
+- `PageParser` extracts structured data from the active `WKWebView` DOM without crawling extra pages.
 - `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
 - `AdBlocker` installs WebKit content rules, blocks known ad hosts, and removes visible ad containers.
 - `NetworkPolicy` blocks disallowed URLs in Localhost mode.

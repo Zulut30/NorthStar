@@ -5,6 +5,7 @@ import WebKit
 
 private let appName = "NorthStar"
 private let settingsTitle = "Настройки"
+private let parserTitle = "Парсер"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
@@ -106,6 +107,7 @@ private final class BrowserViewController: NSViewController {
     private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Вперёд")
     private let homeButton = IconButton(symbolName: "house", tooltip: "Домой")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
+    private let parserButton = IconButton(symbolName: "doc.text.magnifyingglass", tooltip: "Парсер страницы")
     private let settingsButton = IconButton(symbolName: "gearshape", tooltip: settingsTitle)
     private let addressField = NSTextField()
     private let searchEnginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -182,6 +184,8 @@ private final class BrowserViewController: NSViewController {
             showHome(in: tab)
         } else if tab.isShowingSettings {
             showSettings(in: tab)
+        } else if tab.isShowingParser, let snapshot = tab.parserSnapshot {
+            tab.loadParserPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else {
             tab.webView.reload()
         }
@@ -194,6 +198,13 @@ private final class BrowserViewController: NSViewController {
 
     @objc func showSettingsCommand(_ sender: Any?) {
         openSettingsTab()
+    }
+
+    @objc func openParserCommand(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+        Task { @MainActor in
+            await openParserTab(from: tab)
+        }
     }
 
     @objc private func goHome(_ sender: Any?) {
@@ -342,13 +353,15 @@ private final class BrowserViewController: NSViewController {
         homeButton.action = #selector(goHome(_:))
         reloadButton.target = self
         reloadButton.action = #selector(reloadCommand(_:))
+        parserButton.target = self
+        parserButton.action = #selector(openParserCommand(_:))
         settingsButton.target = self
         settingsButton.action = #selector(showSettingsCommand(_:))
 
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [brandTitleField, backButton, forwardButton, homeButton, addressField, searchEnginePopup, networkPopup, reloadButton, settingsButton, progressIndicator].forEach {
+        [brandTitleField, backButton, forwardButton, homeButton, addressField, searchEnginePopup, networkPopup, parserButton, reloadButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -385,7 +398,10 @@ private final class BrowserViewController: NSViewController {
             reloadButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
             reloadButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            networkPopup.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -10),
+            parserButton.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -8),
+            parserButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            networkPopup.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -10),
             networkPopup.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             networkPopup.widthAnchor.constraint(equalToConstant: 118),
 
@@ -597,7 +613,9 @@ private final class BrowserViewController: NSViewController {
         }
 
         let wasShowingSettings = oldTab.isShowingSettings
-        let targetURL = oldTab.isShowingHome || oldTab.isShowingSettings ? nil : oldTab.url ?? oldTab.webView.url
+        let wasShowingParser = oldTab.isShowingParser
+        let parserSnapshot = oldTab.parserSnapshot
+        let targetURL = oldTab.isShowingHome || oldTab.isShowingSettings || oldTab.isShowingParser ? nil : oldTab.url ?? oldTab.webView.url
         let newTab = makeTab(profile: profile)
 
         oldTab.close()
@@ -614,6 +632,8 @@ private final class BrowserViewController: NSViewController {
 
         if wasShowingSettings {
             showSettings(in: newTab)
+        } else if wasShowingParser, let parserSnapshot {
+            newTab.loadParserPage(snapshot: parserSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if let targetURL, NetworkPolicy.allows(targetURL, profile: profile) {
             load(targetURL, in: newTab)
         } else {
@@ -752,6 +772,31 @@ private final class BrowserViewController: NSViewController {
         showSettings(in: tab)
     }
 
+    private func openParserTab(from sourceTab: BrowserTab) async {
+        guard !sourceTab.isShowingHome && !sourceTab.isShowingSettings && !sourceTab.isShowingParser else {
+            NSSound.beep()
+            return
+        }
+
+        let snapshot = await PageParser.snapshot(
+            from: sourceTab.webView,
+            fallbackURL: sourceTab.url ?? sourceTab.webView.url,
+            fallbackTitle: sourceTab.displayTitle
+        )
+
+        let tab = makeTab(profile: sourceTab.profile)
+        tabs.append(tab)
+        activeTabID = tab.id
+        showActiveTab()
+        renderTabs()
+        tab.loadParserPage(
+            snapshot: snapshot,
+            theme: preferences.theme,
+            colorScheme: preferences.colorScheme,
+            design: preferences.design
+        )
+    }
+
     private func showSettings(in tab: BrowserTab) {
         tab.loadSettingsPage(
             preferences: preferences,
@@ -880,6 +925,7 @@ private final class BrowserViewController: NSViewController {
             backButton.isEnabled = false
             forwardButton.isEnabled = false
             reloadButton.isEnabled = false
+            parserButton.isEnabled = false
             addressField.stringValue = ""
             progressIndicator.isHidden = true
             return
@@ -888,6 +934,7 @@ private final class BrowserViewController: NSViewController {
         backButton.isEnabled = tab.webView.canGoBack
         forwardButton.isEnabled = tab.webView.canGoForward
         reloadButton.isEnabled = true
+        parserButton.isEnabled = !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser
 
         let reloadSymbol = tab.webView.isLoading ? "xmark" : "arrow.clockwise"
         reloadButton.image = NSImage(systemSymbolName: reloadSymbol, accessibilityDescription: tab.webView.isLoading ? "Остановить" : "Обновить")
@@ -898,13 +945,15 @@ private final class BrowserViewController: NSViewController {
                 addressField.stringValue = ""
             } else if tab.isShowingSettings {
                 addressField.stringValue = "northstar://settings"
+            } else if tab.isShowingParser {
+                addressField.stringValue = "northstar://parser"
             } else {
                 addressField.stringValue = tab.url?.absoluteString ?? tab.webView.url?.absoluteString ?? ""
             }
         }
 
         progressIndicator.doubleValue = tab.progress
-        progressIndicator.isHidden = tab.isShowingHome || tab.isShowingSettings || !tab.webView.isLoading || tab.progress >= 1
+        progressIndicator.isHidden = tab.isShowingHome || tab.isShowingSettings || tab.isShowingParser || !tab.webView.isLoading || tab.progress >= 1
 
         if let profileIndex = NetworkProfile.allCases.firstIndex(of: tab.profile) {
             networkPopup.selectItem(at: profileIndex)
@@ -956,7 +1005,7 @@ private final class BrowserViewController: NSViewController {
 extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         if let tab = tab(for: webView) {
-            if !tab.isShowingHome && !tab.isShowingSettings {
+            if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser {
                 PerformanceMonitor.shared.begin(tabID: tab.id)
             }
             tab.syncFromWebView()
@@ -971,7 +1020,7 @@ extension BrowserViewController: WKNavigationDelegate {
         }
 
         tab.syncFromWebView()
-        if !tab.isShowingHome && !tab.isShowingSettings,
+        if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser,
            let currentURL = tab.url ?? webView.url {
             tab.refreshFavicon()
             BrowserHistoryStore.shared.record(url: currentURL, title: tab.displayTitle)
@@ -985,7 +1034,7 @@ extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         if let tab = tab(for: webView) {
             tab.syncFromWebView()
-            if !tab.isShowingHome && !tab.isShowingSettings,
+            if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser,
                let currentURL = tab.url ?? webView.url {
                 PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .failed)
                 refreshSettingsTabs()
@@ -998,7 +1047,7 @@ extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if let tab = tab(for: webView) {
             tab.syncFromWebView()
-            if !tab.isShowingHome && !tab.isShowingSettings,
+            if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser,
                let currentURL = tab.url ?? webView.url {
                 PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .failed)
                 refreshSettingsTabs()
@@ -1134,6 +1183,8 @@ private final class BrowserTab {
     private(set) var faviconImage: NSImage? = NSImage(systemSymbolName: "sparkles", accessibilityDescription: appName)
     private(set) var isShowingHome = true
     private(set) var isShowingSettings = false
+    private(set) var isShowingParser = false
+    private(set) var parserSnapshot: PageParseSnapshot?
     private var observations: [NSKeyValueObservation] = []
     private var faviconTask: Task<Void, Never>?
     private var faviconCacheKey: String?
@@ -1141,6 +1192,10 @@ private final class BrowserTab {
     var displayTitle: String {
         if isShowingSettings {
             return settingsTitle
+        }
+
+        if isShowingParser {
+            return parserTitle
         }
 
         if isShowingHome {
@@ -1171,6 +1226,8 @@ private final class BrowserTab {
     func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode) {
         isShowingHome = true
         isShowingSettings = false
+        isShowingParser = false
+        parserSnapshot = nil
         title = appName
         url = nil
         progress = 1
@@ -1187,6 +1244,8 @@ private final class BrowserTab {
     func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode) {
         isShowingHome = false
         isShowingSettings = true
+        isShowingParser = false
+        parserSnapshot = nil
         title = settingsTitle
         url = nil
         progress = 1
@@ -1200,9 +1259,29 @@ private final class BrowserTab {
         )
     }
 
+    func loadParserPage(snapshot: PageParseSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
+        isShowingHome = false
+        isShowingSettings = false
+        isShowingParser = true
+        parserSnapshot = snapshot
+        title = parserTitle
+        url = nil
+        progress = 1
+        faviconTask?.cancel()
+        faviconCacheKey = nil
+        faviconImage = NSImage(systemSymbolName: "doc.text.magnifyingglass", accessibilityDescription: parserTitle)
+        notifyChanged()
+        webView.loadHTMLString(
+            ParserPage.html(snapshot: snapshot, theme: theme, colorScheme: colorScheme, design: design),
+            baseURL: nil
+        )
+    }
+
     func load(_ url: URL) {
         isShowingHome = false
         isShowingSettings = false
+        isShowingParser = false
+        parserSnapshot = nil
         self.url = url
         title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Загрузка"
         progress = 0
@@ -1225,6 +1304,9 @@ private final class BrowserTab {
             progress = webView.isLoading ? webView.estimatedProgress : 1
         } else if isShowingSettings {
             title = settingsTitle
+            progress = webView.isLoading ? webView.estimatedProgress : 1
+        } else if isShowingParser {
+            title = parserTitle
             progress = webView.isLoading ? webView.estimatedProgress : 1
         } else {
             url = webView.url ?? url
@@ -1278,7 +1360,7 @@ private final class BrowserTab {
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    if !self.isShowingHome && !self.isShowingSettings {
+                    if !self.isShowingHome && !self.isShowingSettings && !self.isShowingParser {
                         self.url = webView.url
                     }
                     self.notifyChanged()
@@ -1291,6 +1373,8 @@ private final class BrowserTab {
                         self.title = appName
                     } else if self.isShowingSettings {
                         self.title = settingsTitle
+                    } else if self.isShowingParser {
+                        self.title = parserTitle
                     } else {
                         self.title = Self.normalizedTitle(webView.title) ?? self.title
                     }
@@ -1505,6 +1589,143 @@ private final class FaviconStore {
             return nil
         }
     }
+}
+
+private struct PageParseSnapshot: Codable {
+    var capturedAt: String
+    var url: String
+    var title: String
+    var description: String
+    var language: String
+    var canonicalURL: String
+    var visibleText: String
+    var textCharacters: Int
+    var html: String
+    var htmlCharacters: Int
+    var htmlTruncated: Bool
+    var headings: [PageParseHeading]
+    var links: [PageParseLink]
+    var images: [PageParseImage]
+}
+
+private struct PageParseHeading: Codable {
+    var level: Int
+    var text: String
+}
+
+private struct PageParseLink: Codable {
+    var text: String
+    var href: String
+}
+
+private struct PageParseImage: Codable {
+    var alt: String
+    var src: String
+}
+
+@MainActor
+private enum PageParser {
+    static func snapshot(from webView: WKWebView, fallbackURL: URL?, fallbackTitle: String) async -> PageParseSnapshot {
+        do {
+            if let json = try await webView.evaluateJavaScript(extractionScript) as? String,
+               let data = json.data(using: .utf8) {
+                let decoder = JSONDecoder()
+                return try decoder.decode(PageParseSnapshot.self, from: data)
+            }
+        } catch {
+            return fallbackSnapshot(url: fallbackURL, title: fallbackTitle)
+        }
+
+        return fallbackSnapshot(url: fallbackURL, title: fallbackTitle)
+    }
+
+    private static func fallbackSnapshot(url: URL?, title: String) -> PageParseSnapshot {
+        PageParseSnapshot(
+            capturedAt: ISO8601DateFormatter().string(from: Date()),
+            url: url?.absoluteString ?? "",
+            title: title,
+            description: "",
+            language: "",
+            canonicalURL: "",
+            visibleText: "",
+            textCharacters: 0,
+            html: "",
+            htmlCharacters: 0,
+            htmlTruncated: false,
+            headings: [],
+            links: [],
+            images: []
+        )
+    }
+
+    private static let extractionScript = """
+    (() => {
+      const LIMITS = {
+        text: 120000,
+        html: 300000,
+        headings: 180,
+        links: 600,
+        images: 260
+      };
+      const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const cut = (value, limit) => {
+        const text = String(value || '');
+        return text.length > limit ? text.slice(0, limit) : text;
+      };
+      const visibleText = clean(document.body?.innerText || '');
+      const fullHTML = document.documentElement?.outerHTML || '';
+      const meta = (name) => document.querySelector(`meta[name="${name}"], meta[property="${name}"]`)?.content || '';
+      const canonical = document.querySelector('link[rel="canonical"]')?.href || '';
+
+      const headings = Array.from(document.querySelectorAll('h1,h2,h3'))
+        .map((node) => ({ level: Number(node.tagName.slice(1)), text: clean(node.innerText || node.textContent) }))
+        .filter((item) => item.text)
+        .slice(0, LIMITS.headings);
+
+      const seenLinks = new Set();
+      const links = [];
+      for (const anchor of document.querySelectorAll('a[href]')) {
+        const href = anchor.href || '';
+        if (!href || seenLinks.has(href)) continue;
+        seenLinks.add(href);
+        links.push({
+          text: clean(anchor.innerText || anchor.getAttribute('aria-label') || anchor.title || href),
+          href
+        });
+        if (links.length >= LIMITS.links) break;
+      }
+
+      const seenImages = new Set();
+      const images = [];
+      for (const image of document.querySelectorAll('img[src]')) {
+        const src = image.currentSrc || image.src || '';
+        if (!src || seenImages.has(src)) continue;
+        seenImages.add(src);
+        images.push({
+          alt: clean(image.alt || image.getAttribute('aria-label') || ''),
+          src
+        });
+        if (images.length >= LIMITS.images) break;
+      }
+
+      return JSON.stringify({
+        capturedAt: new Date().toISOString(),
+        url: location.href,
+        title: clean(document.title),
+        description: clean(meta('description') || meta('og:description')),
+        language: document.documentElement?.lang || '',
+        canonicalURL: canonical,
+        visibleText: cut(visibleText, LIMITS.text),
+        textCharacters: visibleText.length,
+        html: cut(fullHTML, LIMITS.html),
+        htmlCharacters: fullHTML.length,
+        htmlTruncated: fullHTML.length > LIMITS.html,
+        headings,
+        links,
+        images
+      });
+    })()
+    """
 }
 
 private final class AppPreferences {
@@ -3224,6 +3445,343 @@ private enum URLParser {
     }
 }
 
+private enum ParserPage {
+    static func html(snapshot: PageParseSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
+        let colors = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
+        let jsonPayload = json(from: snapshot)
+        let markdownPayload = markdown(from: snapshot)
+        let textPayload = snapshot.visibleText
+        let linkPayload = snapshot.links.map { "\($0.text)\t\($0.href)" }.joined(separator: "\n")
+        let htmlPayload = snapshot.html
+        let source = snapshot.url.isEmpty ? "Неизвестный источник" : snapshot.url
+        let title = snapshot.title.isEmpty ? "Страница без заголовка" : snapshot.title
+        let description = snapshot.description.isEmpty ? "Описание не найдено" : snapshot.description
+        let htmlNote = snapshot.htmlTruncated ? "HTML обрезан до безопасного лимита" : "HTML полностью в снимке"
+        let headingRows = snapshot.headings.isEmpty
+            ? #"<p class="empty">Заголовки не найдены.</p>"#
+            : snapshot.headings.map { heading in
+                """
+                <tr>
+                  <td>H\(heading.level)</td>
+                  <td>\(heading.text.htmlEscaped)</td>
+                </tr>
+                """
+            }.joined()
+        let linkRows = snapshot.links.prefix(80).map { link in
+            """
+            <tr>
+              <td>\(link.text.htmlEscaped)</td>
+              <td><a href="\(link.href.htmlEscaped)">\(link.href.htmlEscaped)</a></td>
+            </tr>
+            """
+        }.joined()
+        let imageRows = snapshot.images.prefix(60).map { image in
+            """
+            <tr>
+              <td>\(image.alt.htmlEscaped)</td>
+              <td><a href="\(image.src.htmlEscaped)">\(image.src.htmlEscaped)</a></td>
+            </tr>
+            """
+        }.joined()
+
+        return """
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <base target="_blank">
+          <title>\(parserTitle)</title>
+          <style>
+            :root {
+              color-scheme: \(colors.colorScheme);
+              --bg: \(colors.background);
+              --panel: \(colors.panel);
+              --panel-strong: \(colors.panelStrong);
+              --text: \(colors.text);
+              --muted: \(colors.muted);
+              --line: \(colors.line);
+              --accent: \(colors.accent);
+              --shadow: \(colors.shadow);
+              --radius: \(design.radius);
+            }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              min-height: 100vh;
+              background: var(--bg);
+              color: var(--text);
+              font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+            }
+            main {
+              width: min(100vw - 40px, \(design.settingsWidth));
+              margin: 0 auto;
+              padding: 30px 0 44px;
+            }
+            header {
+              display: grid;
+              gap: 8px;
+              margin-bottom: 18px;
+            }
+            h1, h2, p { margin: 0; }
+            h1 { font-size: clamp(30px, 4vw, 56px); letter-spacing: 0; }
+            h2 { font-size: 18px; }
+            a { color: var(--text); }
+            .muted, small { color: var(--muted); }
+            .source {
+              overflow-wrap: anywhere;
+              color: var(--muted);
+            }
+            .toolbar {
+              display: flex;
+              flex-wrap: wrap;
+              gap: 10px;
+              margin: 18px 0;
+            }
+            button {
+              min-height: 34px;
+              border-radius: var(--radius);
+              border: 1px solid var(--line);
+              background: var(--panel-strong);
+              color: var(--text);
+              padding: 0 12px;
+              font: inherit;
+              font-weight: 750;
+            }
+            button:hover { border-color: color-mix(in srgb, var(--accent) 58%, var(--line)); }
+            .metric-grid {
+              display: grid;
+              grid-template-columns: repeat(5, minmax(0, 1fr));
+              gap: 10px;
+              margin-bottom: 16px;
+            }
+            .metric {
+              min-height: 74px;
+              display: grid;
+              align-content: center;
+              gap: 6px;
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+              background: var(--panel);
+              padding: 12px;
+              box-shadow: 0 14px 34px var(--shadow);
+            }
+            .metric span {
+              color: var(--muted);
+              font-size: 12px;
+            }
+            .metric strong {
+              font-size: 18px;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            }
+            section {
+              margin-top: 16px;
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+              background: var(--panel);
+              box-shadow: 0 14px 34px var(--shadow);
+              overflow: hidden;
+            }
+            .section-head {
+              display: flex;
+              align-items: center;
+              justify-content: space-between;
+              gap: 12px;
+              padding: 14px 16px;
+              border-bottom: 1px solid var(--line);
+              background: var(--panel-strong);
+            }
+            textarea {
+              display: block;
+              width: 100%;
+              min-height: 220px;
+              resize: vertical;
+              border: 0;
+              border-top: 1px solid var(--line);
+              background: color-mix(in srgb, var(--panel) 90%, black 4%);
+              color: var(--text);
+              padding: 14px;
+              font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+              line-height: 1.5;
+            }
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              table-layout: fixed;
+            }
+            th, td {
+              border-top: 1px solid var(--line);
+              padding: 10px 12px;
+              text-align: left;
+              vertical-align: top;
+              overflow-wrap: anywhere;
+            }
+            th {
+              color: var(--muted);
+              font-size: 12px;
+              font-weight: 750;
+              background: var(--panel-strong);
+            }
+            .empty {
+              padding: 14px 16px;
+              color: var(--muted);
+            }
+            @media (max-width: 880px) {
+              main { width: min(100vw - 28px, \(design.settingsWidth)); }
+              .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+              .section-head { align-items: start; flex-direction: column; }
+            }
+          </style>
+        </head>
+        <body>
+          <main>
+            <header>
+              <h1>\(parserTitle)</h1>
+              <p class="source">\(source.htmlEscaped)</p>
+              <p class="muted">\(title.htmlEscaped) · \(description.htmlEscaped)</p>
+            </header>
+
+            <div class="metric-grid">
+              <div class="metric"><span>Текст</span><strong>\(snapshot.textCharacters)</strong></div>
+              <div class="metric"><span>Ссылки</span><strong>\(snapshot.links.count)</strong></div>
+              <div class="metric"><span>Заголовки</span><strong>\(snapshot.headings.count)</strong></div>
+              <div class="metric"><span>Изображения</span><strong>\(snapshot.images.count)</strong></div>
+              <div class="metric"><span>HTML</span><strong>\(snapshot.htmlCharacters)</strong></div>
+            </div>
+
+            <div class="toolbar">
+              <button data-copy="json">JSON</button>
+              <button data-copy="markdown">Markdown</button>
+              <button data-copy="text">Текст</button>
+              <button data-copy="links">Ссылки</button>
+              <button data-copy="html">HTML</button>
+            </div>
+
+            <section>
+              <div class="section-head">
+                <div>
+                  <h2>JSON</h2>
+                  <small>\(snapshot.capturedAt.htmlEscaped)</small>
+                </div>
+              </div>
+              <textarea id="json" readonly>\(jsonPayload.htmlEscaped)</textarea>
+            </section>
+
+            <section>
+              <div class="section-head">
+                <div>
+                  <h2>Markdown</h2>
+                  <small>\(htmlNote.htmlEscaped)</small>
+                </div>
+              </div>
+              <textarea id="markdown" readonly>\(markdownPayload.htmlEscaped)</textarea>
+            </section>
+
+            <section>
+              <div class="section-head"><h2>Текст</h2></div>
+              <textarea id="text" readonly>\(textPayload.htmlEscaped)</textarea>
+            </section>
+
+            <section>
+              <div class="section-head"><h2>Заголовки</h2></div>
+              \(headingRows)
+            </section>
+
+            <section>
+              <div class="section-head">
+                <h2>Ссылки</h2>
+                <small>Показаны первые \(min(snapshot.links.count, 80))</small>
+              </div>
+              <textarea id="links" readonly>\(linkPayload.htmlEscaped)</textarea>
+              \(linkRows.isEmpty ? #"<p class="empty">Ссылки не найдены.</p>"# : """
+              <table>
+                <thead><tr><th>Текст</th><th>URL</th></tr></thead>
+                <tbody>\(linkRows)</tbody>
+              </table>
+              """)
+            </section>
+
+            <section>
+              <div class="section-head">
+                <h2>Изображения</h2>
+                <small>Показаны первые \(min(snapshot.images.count, 60))</small>
+              </div>
+              \(imageRows.isEmpty ? #"<p class="empty">Изображения не найдены.</p>"# : """
+              <table>
+                <thead><tr><th>Alt</th><th>URL</th></tr></thead>
+                <tbody>\(imageRows)</tbody>
+              </table>
+              """)
+            </section>
+
+            <section>
+              <div class="section-head">
+                <div>
+                  <h2>HTML</h2>
+                  <small>\(htmlNote.htmlEscaped)</small>
+                </div>
+              </div>
+              <textarea id="html" readonly>\(htmlPayload.htmlEscaped)</textarea>
+            </section>
+          </main>
+          <script>
+            document.querySelectorAll('[data-copy]').forEach((button) => {
+              button.addEventListener('click', async () => {
+                const id = button.getAttribute('data-copy');
+                const field = document.getElementById(id);
+                if (!field) return;
+                await navigator.clipboard.writeText(field.value);
+                const previous = button.textContent;
+                button.textContent = 'Скопировано';
+                window.setTimeout(() => { button.textContent = previous; }, 900);
+              });
+            });
+          </script>
+        </body>
+        </html>
+        """
+    }
+
+    private static func json(from snapshot: PageParseSnapshot) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(snapshot),
+              let string = String(data: data, encoding: .utf8) else {
+            return "{}"
+        }
+
+        return string
+    }
+
+    private static func markdown(from snapshot: PageParseSnapshot) -> String {
+        let title = snapshot.title.isEmpty ? "Страница" : snapshot.title
+        let description = snapshot.description.isEmpty ? "" : "\n\n\(snapshot.description)"
+        let headings = snapshot.headings.prefix(80).map { heading in
+            "\(String(repeating: "#", count: max(1, min(heading.level, 6)))) \(heading.text)"
+        }.joined(separator: "\n")
+        let links = snapshot.links.prefix(120).map { link in
+            "- [\(link.text.isEmpty ? link.href : link.text)](\(link.href))"
+        }.joined(separator: "\n")
+
+        return """
+        # \(title)
+
+        \(snapshot.url)\(description)
+
+        ## Заголовки
+        \(headings.isEmpty ? "Нет данных" : headings)
+
+        ## Текст
+        \(snapshot.visibleText)
+
+        ## Ссылки
+        \(links.isEmpty ? "Нет данных" : links)
+        """
+    }
+}
+
 private enum HomePage {
     static func html(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
@@ -3926,6 +4484,9 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     viewMenu.addItem(.separator())
     viewMenu.addItem(withTitle: "Предыдущая вкладка", action: #selector(BrowserViewController.previousTabCommand(_:)), keyEquivalent: "{")
     viewMenu.addItem(withTitle: "Следующая вкладка", action: #selector(BrowserViewController.nextTabCommand(_:)), keyEquivalent: "}")
+    viewMenu.addItem(.separator())
+    let parserItem = viewMenu.addItem(withTitle: "Парсер страницы", action: #selector(BrowserViewController.openParserCommand(_:)), keyEquivalent: "p")
+    parserItem.keyEquivalentModifierMask = [.command, .option]
     viewMenu.addItem(.separator())
     viewMenu.addItem(withTitle: "Фокус на адрес", action: #selector(BrowserViewController.focusLocation(_:)), keyEquivalent: "l")
     viewItem.submenu = viewMenu
