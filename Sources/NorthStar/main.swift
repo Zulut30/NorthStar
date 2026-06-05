@@ -9,6 +9,7 @@ private let appName = "NorthStar"
 private let settingsTitle = "Настройки"
 private let parserTitle = "Парсер"
 private let readerTitle = "Чтение"
+private let cssScraperTitle = "CSS Scrapper"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
@@ -165,6 +166,11 @@ private final class BrowserViewController: NSViewController {
     private let toolbarTintView = GradientTintView()
     private let toolbarSeparatorView = NSView()
     private let tabBarTintView = GradientTintView()
+
+    private let featureBarView = NSVisualEffectView()
+    private let featureBarLabel = NSTextField(labelWithString: "Инструменты страницы")
+    private let aiFilterButton = ToolbarActionButton(symbolName: "sparkles.rectangle.stack", title: "ИИ-фильтр", tooltip: "Подсветка ИИ-текста и вердикт на странице", width: 124)
+    private let cssScraperButton = ToolbarActionButton(symbolName: "eyedropper.halffull", title: "CSS Scrapper", tooltip: "Цвета, шрифты, медиа и CSS-сводка сайта", width: 138)
 
     private let bookmarksBarView = NSVisualEffectView()
     private let bookmarksBarScrollView = NSScrollView()
@@ -402,8 +408,11 @@ private final class BrowserViewController: NSViewController {
         }
 
         addItem("Парсер страницы", symbol: "doc.text.magnifyingglass", action: #selector(openParserCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
+        addItem("CSS Scrapper", symbol: "eyedropper.halffull", action: #selector(openCssScraperCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
         addItem("Конвертер валют", symbol: "dollarsign.circle", action: #selector(showCurrencyConverterCommand(_:)))
         addItem("Режим чтения", symbol: "text.rectangle.page", action: #selector(openReaderCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
+        let aiTitle = preferences.aiFilterEnabled ? "ИИ-фильтр: выключить" : "ИИ-фильтр: включить"
+        addItem(aiTitle, symbol: "sparkles.rectangle.stack", action: #selector(toggleAIFilterCommand(_:)))
         menu.addItem(.separator())
         addItem("Новая приватная вкладка", symbol: "eye.slash", action: #selector(newPrivateTabCommand(_:)))
         menu.addItem(.separator())
@@ -411,6 +420,19 @@ private final class BrowserViewController: NSViewController {
         addItem("Обновить без кэша", symbol: "arrow.clockwise.circle", action: #selector(hardReloadCommand(_:)), enabled: tab != nil)
 
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 6), in: sender)
+    }
+
+    @objc func toggleAIFilterCommand(_ sender: Any?) {
+        preferences.aiFilterEnabled.toggle()
+        applyAIFilter(enabled: preferences.aiFilterEnabled)
+        syncFeatureBar()
+    }
+
+    private func applyAIFilter(enabled: Bool) {
+        let script = enabled ? AIFilter.injectionScript : AIFilter.removalScript
+        for tab in tabs where tab.isBrowsablePage {
+            tab.webView.evaluateJavaScript(script, completionHandler: nil)
+        }
     }
 
     @objc func findOnPageCommand(_ sender: Any?) {
@@ -593,6 +615,13 @@ private final class BrowserViewController: NSViewController {
         guard let tab = activeTab else { return }
         Task { @MainActor in
             await openReaderTab(from: tab)
+        }
+    }
+
+    @objc func openCssScraperCommand(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+        Task { @MainActor in
+            await openCssScraperTab(from: tab)
         }
     }
 
@@ -1203,6 +1232,7 @@ private final class BrowserViewController: NSViewController {
         toolsButton.action = #selector(showToolsMenu(_:))
 
         browserContentView.addSubview(toolbarView)
+        browserContentView.addSubview(featureBarView)
         browserContentView.addSubview(bookmarksBarView)
         browserContentView.addSubview(webContainerView)
 
@@ -1210,6 +1240,8 @@ private final class BrowserViewController: NSViewController {
         [toolbarSeparatorView, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, reloadButton, toolsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
+
+        configureFeatureBar()
 
         let toolbarHeight = toolbarView.heightAnchor.constraint(equalToConstant: preferences.design.toolbarHeight)
         toolbarHeightConstraint = toolbarHeight
@@ -1220,7 +1252,12 @@ private final class BrowserViewController: NSViewController {
             toolbarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
             toolbarHeight,
 
-            bookmarksBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+            featureBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+            featureBarView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
+            featureBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
+            featureBarView.heightAnchor.constraint(equalToConstant: 36),
+
+            bookmarksBarView.topAnchor.constraint(equalTo: featureBarView.bottomAnchor),
             bookmarksBarView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
             bookmarksBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
 
@@ -1294,6 +1331,60 @@ private final class BrowserViewController: NSViewController {
 
         renderTabs()
         syncToolbar()
+    }
+
+    private func configureFeatureBar() {
+        featureBarView.translatesAutoresizingMaskIntoConstraints = false
+        featureBarView.material = .titlebar
+        featureBarView.blendingMode = .withinWindow
+        featureBarView.state = .active
+
+        featureBarLabel.translatesAutoresizingMaskIntoConstraints = false
+        featureBarLabel.font = .systemFont(ofSize: 11, weight: .semibold)
+        featureBarLabel.textColor = .secondaryLabelColor
+        featureBarLabel.lineBreakMode = .byTruncatingTail
+
+        aiFilterButton.target = self
+        aiFilterButton.action = #selector(toggleAIFilterCommand(_:))
+        cssScraperButton.target = self
+        cssScraperButton.action = #selector(openCssScraperCommand(_:))
+
+        [featureBarLabel, aiFilterButton, cssScraperButton].forEach {
+            featureBarView.addSubview($0)
+        }
+
+        let separator = NSView()
+        separator.translatesAutoresizingMaskIntoConstraints = false
+        separator.wantsLayer = true
+        separator.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        featureBarView.addSubview(separator)
+
+        NSLayoutConstraint.activate([
+            featureBarLabel.leadingAnchor.constraint(equalTo: featureBarView.leadingAnchor, constant: 14),
+            featureBarLabel.centerYAnchor.constraint(equalTo: featureBarView.centerYAnchor),
+
+            cssScraperButton.trailingAnchor.constraint(equalTo: featureBarView.trailingAnchor, constant: -12),
+            cssScraperButton.centerYAnchor.constraint(equalTo: featureBarView.centerYAnchor),
+
+            aiFilterButton.trailingAnchor.constraint(equalTo: cssScraperButton.leadingAnchor, constant: -8),
+            aiFilterButton.centerYAnchor.constraint(equalTo: featureBarView.centerYAnchor),
+
+            separator.leadingAnchor.constraint(equalTo: featureBarView.leadingAnchor),
+            separator.trailingAnchor.constraint(equalTo: featureBarView.trailingAnchor),
+            separator.bottomAnchor.constraint(equalTo: featureBarView.bottomAnchor),
+            separator.heightAnchor.constraint(equalToConstant: 1)
+        ])
+
+        syncFeatureBar()
+    }
+
+    private func syncFeatureBar() {
+        let active = preferences.aiFilterEnabled
+        aiFilterButton.contentTintColor = active ? .controlAccentColor : nil
+        aiFilterButton.title = active ? "ИИ-фильтр: вкл" : "ИИ-фильтр"
+        let browsable = activeTab?.isBrowsablePage ?? false
+        cssScraperButton.isEnabled = browsable
+        aiFilterButton.isEnabled = true
     }
 
     private func configureBookmarksBar() {
@@ -1983,6 +2074,8 @@ private final class BrowserViewController: NSViewController {
         let parserSnapshot = oldTab.parserSnapshot
         let wasShowingReader = oldTab.isShowingReader
         let readerSnapshot = oldTab.readerSnapshot
+        let wasShowingCssScraper = oldTab.isShowingCssScraper
+        let cssScrapeSnapshot = oldTab.cssScrapeSnapshot
         let targetURL = oldTab.isInternalPage ? nil : oldTab.url ?? oldTab.webView.url
         let newTab = makeTab(profile: profile)
 
@@ -2004,6 +2097,8 @@ private final class BrowserViewController: NSViewController {
             newTab.loadParserPage(snapshot: parserSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if wasShowingReader, let readerSnapshot {
             newTab.loadReaderPage(snapshot: readerSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if wasShowingCssScraper, let cssScrapeSnapshot {
+            newTab.loadCssScraperPage(snapshot: cssScrapeSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if let targetURL, NetworkPolicy.allows(targetURL, profile: profile) {
             load(targetURL, in: newTab)
         } else {
@@ -2132,7 +2227,9 @@ private final class BrowserViewController: NSViewController {
             design: preferences.design,
             homeBackground: preferences.homeBackground,
             recentHistory: BrowserHistoryStore.shared.entries,
-            bookmarks: BookmarkStore.shared.entries
+            bookmarks: BookmarkStore.shared.entries,
+            widgets: preferences.homeWidgets,
+            notes: preferences.homeNotes
         )
     }
 
@@ -2210,6 +2307,31 @@ private final class BrowserViewController: NSViewController {
         )
     }
 
+    private func openCssScraperTab(from sourceTab: BrowserTab) async {
+        guard sourceTab.isBrowsablePage else {
+            NSSound.beep()
+            return
+        }
+
+        let snapshot = await CssScraper.snapshot(
+            from: sourceTab.webView,
+            fallbackURL: sourceTab.url ?? sourceTab.webView.url,
+            fallbackTitle: sourceTab.displayTitle
+        )
+
+        let tab = makeTab(profile: sourceTab.profile)
+        tabs.append(tab)
+        activeTabID = tab.id
+        showActiveTab()
+        renderTabs()
+        tab.loadCssScraperPage(
+            snapshot: snapshot,
+            theme: preferences.theme,
+            colorScheme: preferences.colorScheme,
+            design: preferences.design
+        )
+    }
+
     private func showSettings(in tab: BrowserTab, activeSection: SettingsSection = .overview) {
         tab.loadSettingsPage(
             preferences: preferences,
@@ -2246,6 +2368,22 @@ private final class BrowserViewController: NSViewController {
 
     private func handleInternalSearchURL(_ url: URL, in tab: BrowserTab) {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            showHome(in: tab)
+            return
+        }
+
+        if url.host(percentEncoded: false) == "widgets" {
+            if let toggle = components.queryItems?.first(where: { $0.name == "toggle" })?.value,
+               let widget = HomeWidget(rawValue: toggle) {
+                if preferences.homeWidgets.contains(widget) {
+                    preferences.homeWidgets.remove(widget)
+                } else {
+                    preferences.homeWidgets.insert(widget)
+                }
+            }
+            if let note = components.queryItems?.first(where: { $0.name == "note" })?.value {
+                preferences.homeNotes = note
+            }
             showHome(in: tab)
             return
         }
@@ -2473,6 +2611,7 @@ private final class BrowserViewController: NSViewController {
         }
 
         view.window?.title = tab.profile.isPrivateMode ? "\(appName) - Приватно" : appName
+        syncFeatureBar()
     }
 
     private var isEditingAddress: Bool {
@@ -2759,6 +2898,10 @@ extension BrowserViewController: WKNavigationDelegate {
             refreshSettingsTabs()
         }
 
+        if preferences.aiFilterEnabled, tab.isBrowsablePage {
+            webView.evaluateJavaScript(AIFilter.injectionScript, completionHandler: nil)
+        }
+
         syncToolbar()
     }
 
@@ -2950,14 +3093,16 @@ private final class BrowserTab {
     private(set) var isShowingSettings = false
     private(set) var isShowingParser = false
     private(set) var isShowingReader = false
+    private(set) var isShowingCssScraper = false
     private(set) var parserSnapshot: PageParseSnapshot?
     private(set) var readerSnapshot: ReaderSnapshot?
+    private(set) var cssScrapeSnapshot: CssScrapeSnapshot?
     private var observations: [NSKeyValueObservation] = []
     private var faviconTask: Task<Void, Never>?
     private var faviconCacheKey: String?
 
     var isInternalPage: Bool {
-        isShowingHome || isShowingSettings || isShowingParser || isShowingReader
+        isShowingHome || isShowingSettings || isShowingParser || isShowingReader || isShowingCssScraper
     }
 
     var isBrowsablePage: Bool {
@@ -2975,6 +3120,10 @@ private final class BrowserTab {
 
         if isShowingReader {
             return readerTitle
+        }
+
+        if isShowingCssScraper {
+            return cssScraperTitle
         }
 
         if isShowingHome {
@@ -3010,13 +3159,15 @@ private final class BrowserTab {
         return icon
     }
 
-    func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry]) {
+    func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry], widgets: Set<HomeWidget>, notes: String) {
         isShowingHome = true
         isShowingSettings = false
         isShowingParser = false
         isShowingReader = false
+        isShowingCssScraper = false
         parserSnapshot = nil
         readerSnapshot = nil
+        cssScrapeSnapshot = nil
         title = appName
         url = nil
         progress = 1
@@ -3027,7 +3178,7 @@ private final class BrowserTab {
             : Self.appLogoIcon()
         notifyChanged()
         webView.loadHTMLString(
-            HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory, bookmarks: bookmarks),
+            HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory, bookmarks: bookmarks, widgets: widgets, notes: notes),
             baseURL: nil
         )
     }
@@ -3037,8 +3188,10 @@ private final class BrowserTab {
         isShowingSettings = true
         isShowingParser = false
         isShowingReader = false
+        isShowingCssScraper = false
         parserSnapshot = nil
         readerSnapshot = nil
+        cssScrapeSnapshot = nil
         title = settingsTitle
         url = nil
         progress = 1
@@ -3057,8 +3210,10 @@ private final class BrowserTab {
         isShowingSettings = false
         isShowingParser = true
         isShowingReader = false
+        isShowingCssScraper = false
         parserSnapshot = snapshot
         readerSnapshot = nil
+        cssScrapeSnapshot = nil
         title = parserTitle
         url = nil
         progress = 1
@@ -3077,8 +3232,10 @@ private final class BrowserTab {
         isShowingSettings = false
         isShowingParser = false
         isShowingReader = true
+        isShowingCssScraper = false
         parserSnapshot = nil
         readerSnapshot = snapshot
+        cssScrapeSnapshot = nil
         title = snapshot.title.isEmpty ? readerTitle : snapshot.title
         url = nil
         progress = 1
@@ -3092,13 +3249,37 @@ private final class BrowserTab {
         )
     }
 
+    func loadCssScraperPage(snapshot: CssScrapeSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
+        isShowingHome = false
+        isShowingSettings = false
+        isShowingParser = false
+        isShowingReader = false
+        isShowingCssScraper = true
+        parserSnapshot = nil
+        readerSnapshot = nil
+        cssScrapeSnapshot = snapshot
+        title = cssScraperTitle
+        url = nil
+        progress = 1
+        faviconTask?.cancel()
+        faviconCacheKey = nil
+        faviconImage = NSImage(systemSymbolName: "eyedropper.halffull", accessibilityDescription: cssScraperTitle)
+        notifyChanged()
+        webView.loadHTMLString(
+            CssScraperPage.html(snapshot: snapshot, theme: theme, colorScheme: colorScheme, design: design),
+            baseURL: nil
+        )
+    }
+
     func load(_ url: URL) {
         isShowingHome = false
         isShowingSettings = false
         isShowingParser = false
         isShowingReader = false
+        isShowingCssScraper = false
         parserSnapshot = nil
         readerSnapshot = nil
+        cssScrapeSnapshot = nil
         self.url = url
         title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Загрузка"
         progress = 0
@@ -3112,8 +3293,10 @@ private final class BrowserTab {
         isShowingSettings = false
         isShowingParser = false
         isShowingReader = false
+        isShowingCssScraper = false
         parserSnapshot = nil
         readerSnapshot = nil
+        cssScrapeSnapshot = nil
         url = fileURL
         title = fileURL.lastPathComponent
         progress = 0
@@ -3144,6 +3327,9 @@ private final class BrowserTab {
             progress = webView.isLoading ? webView.estimatedProgress : 1
         } else if isShowingReader {
             title = readerSnapshot?.title.isEmpty == false ? readerSnapshot!.title : readerTitle
+            progress = webView.isLoading ? webView.estimatedProgress : 1
+        } else if isShowingCssScraper {
+            title = cssScraperTitle
             progress = webView.isLoading ? webView.estimatedProgress : 1
         } else {
             url = webView.url ?? url
@@ -3600,6 +3786,164 @@ private enum PageParser {
     """
 }
 
+private struct CssScrapeSnapshot: Codable {
+    var url: String
+    var title: String
+    var colors: [CssTally]
+    var fonts: [CssTally]
+    var fontSizes: [CssTally]
+    var images: [CssImage]
+    var svgCount: Int
+    var videoCount: Int
+    var stylesheetCount: Int
+    var ruleCount: Int
+    var description: String
+    var themeColor: String
+    var viewport: String
+    var generator: String
+    var elementsScanned: Int
+}
+
+private struct CssTally: Codable {
+    var label: String
+    var count: Int
+}
+
+private struct CssImage: Codable {
+    var src: String
+    var alt: String
+    var width: Int
+    var height: Int
+}
+
+@MainActor
+private enum CssScraper {
+    static func snapshot(from webView: WKWebView, fallbackURL: URL?, fallbackTitle: String) async -> CssScrapeSnapshot {
+        do {
+            if let json = try await webView.evaluateJavaScript(extractionScript) as? String,
+               let data = json.data(using: .utf8) {
+                return try JSONDecoder().decode(CssScrapeSnapshot.self, from: data)
+            }
+        } catch {
+            return fallback(url: fallbackURL, title: fallbackTitle)
+        }
+        return fallback(url: fallbackURL, title: fallbackTitle)
+    }
+
+    private static func fallback(url: URL?, title: String) -> CssScrapeSnapshot {
+        CssScrapeSnapshot(
+            url: url?.absoluteString ?? "",
+            title: title,
+            colors: [], fonts: [], fontSizes: [], images: [],
+            svgCount: 0, videoCount: 0, stylesheetCount: 0, ruleCount: 0,
+            description: "", themeColor: "", viewport: "", generator: "",
+            elementsScanned: 0
+        )
+    }
+
+    private static let extractionScript = #"""
+    (() => {
+      const ELEMENT_LIMIT = 5000;
+      const meta = (sel) => (document.querySelector(sel)?.getAttribute("content") || "").trim();
+
+      const toHex = (value) => {
+        if (!value) return null;
+        const v = value.trim().toLowerCase();
+        if (v === "transparent" || v === "currentcolor" || v.startsWith("var(")) return null;
+        const m = v.match(/rgba?\(([^)]+)\)/);
+        if (m) {
+          const parts = m[1].split(",").map((p) => p.trim());
+          const a = parts.length > 3 ? parseFloat(parts[3]) : 1;
+          if (a === 0) return null;
+          const [r, g, b] = parts.slice(0, 3).map((p) => Math.max(0, Math.min(255, Math.round(parseFloat(p)))));
+          return "#" + [r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("");
+        }
+        if (/^#([0-9a-f]{3}|[0-9a-f]{6})$/.test(v)) {
+          if (v.length === 4) return "#" + v.slice(1).split("").map((c) => c + c).join("");
+          return v;
+        }
+        return null;
+      };
+
+      const colorCounts = new Map();
+      const fontCounts = new Map();
+      const sizeCounts = new Map();
+      const bump = (map, key) => { if (!key) return; map.set(key, (map.get(key) || 0) + 1); };
+
+      const elements = document.querySelectorAll("*");
+      const limit = Math.min(elements.length, ELEMENT_LIMIT);
+      const bgImages = new Set();
+      for (let i = 0; i < limit; i += 1) {
+        const el = elements[i];
+        const cs = getComputedStyle(el);
+        bump(colorCounts, toHex(cs.color));
+        bump(colorCounts, toHex(cs.backgroundColor));
+        bump(colorCounts, toHex(cs.borderTopColor));
+        const family = (cs.fontFamily || "").split(",")[0].replace(/["']/g, "").trim();
+        if (family) bump(fontCounts, family);
+        const size = cs.fontSize;
+        if (size) bump(sizeCounts, size);
+        const bg = cs.backgroundImage;
+        if (bg && bg !== "none") {
+          const urls = bg.match(/url\((['"]?)(.*?)\1\)/g) || [];
+          urls.forEach((u) => {
+            const inner = u.replace(/url\((['"]?)(.*?)\1\)/, "$2");
+            if (inner && !inner.startsWith("data:")) {
+              try { bgImages.add(new URL(inner, location.href).href); } catch (e) {}
+            }
+          });
+        }
+      }
+
+      const sortTally = (map) => Array.from(map.entries())
+        .sort((a, b) => b[1] - a[1])
+        .map(([label, count]) => ({ label, count }));
+
+      const seenImg = new Set();
+      const images = [];
+      for (const img of document.querySelectorAll("img")) {
+        const src = img.currentSrc || img.src || "";
+        if (!src || src.startsWith("data:") || seenImg.has(src)) continue;
+        seenImg.add(src);
+        images.push({
+          src,
+          alt: (img.alt || "").trim(),
+          width: img.naturalWidth || img.width || 0,
+          height: img.naturalHeight || img.height || 0
+        });
+        if (images.length >= 80) break;
+      }
+      for (const url of bgImages) {
+        if (seenImg.has(url) || images.length >= 120) continue;
+        seenImg.add(url);
+        images.push({ src: url, alt: "background-image", width: 0, height: 0 });
+      }
+
+      let ruleCount = 0;
+      for (const sheet of document.styleSheets) {
+        try { ruleCount += sheet.cssRules ? sheet.cssRules.length : 0; } catch (e) {}
+      }
+
+      return JSON.stringify({
+        url: location.href,
+        title: document.title || location.host,
+        colors: sortTally(colorCounts).slice(0, 28),
+        fonts: sortTally(fontCounts).slice(0, 16),
+        fontSizes: sortTally(sizeCounts).slice(0, 16),
+        images,
+        svgCount: document.querySelectorAll("svg").length,
+        videoCount: document.querySelectorAll("video").length,
+        stylesheetCount: document.styleSheets.length,
+        ruleCount,
+        description: meta('meta[name="description"]'),
+        themeColor: meta('meta[name="theme-color"]'),
+        viewport: meta('meta[name="viewport"]'),
+        generator: meta('meta[name="generator"]'),
+        elementsScanned: limit
+      });
+    })()
+    """#
+}
 
 private struct ReaderSnapshot: Codable {
     var url: String
@@ -3694,6 +4038,58 @@ private enum ArticleReader {
     """
 }
 
+enum HomeWidget: String, CaseIterable {
+    case clock
+    case links
+    case recent
+    case worldclock
+    case notes
+    case tips
+
+    var title: String {
+        switch self {
+        case .clock: return "Часы"
+        case .links: return "Закладки и ссылки"
+        case .recent: return "Недавние"
+        case .worldclock: return "Мировые часы"
+        case .notes: return "Заметка"
+        case .tips: return "Горячие клавиши"
+        }
+    }
+
+    var summary: String {
+        switch self {
+        case .clock: return "Крупные часы с секундами и приветствием"
+        case .links: return "Плитки закладок или быстрых ссылок"
+        case .recent: return "Последние посещённые страницы"
+        case .worldclock: return "Время в нескольких часовых поясах"
+        case .notes: return "Быстрая заметка, сохраняется локально"
+        case .tips: return "Подсказки по сочетаниям клавиш"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .clock: return "clock"
+        case .links: return "square.grid.2x2"
+        case .recent: return "clock.arrow.circlepath"
+        case .worldclock: return "globe"
+        case .notes: return "note.text"
+        case .tips: return "keyboard"
+        }
+    }
+
+    static let defaultSet: Set<HomeWidget> = [.clock, .links, .recent]
+
+    static func serialize(_ widgets: Set<HomeWidget>) -> String {
+        allCases.filter { widgets.contains($0) }.map(\.rawValue).joined(separator: ",")
+    }
+
+    static func deserialize(_ raw: String) -> Set<HomeWidget> {
+        Set(raw.split(separator: ",").compactMap { HomeWidget(rawValue: String($0)) })
+    }
+}
+
 private final class AppPreferences {
     static let shared = AppPreferences()
     static let didChangeNotification = Notification.Name("NorthStarPreferencesDidChange")
@@ -3746,6 +4142,18 @@ private final class AppPreferences {
         didSet { saveAndNotify(key: Keys.currencyAPIKey, value: currencyAPIKey) }
     }
 
+    var aiFilterEnabled: Bool {
+        didSet { saveAndNotify(key: Keys.aiFilterEnabled, value: aiFilterEnabled) }
+    }
+
+    var homeNotes: String {
+        didSet { saveAndNotify(key: Keys.homeNotes, value: homeNotes) }
+    }
+
+    var homeWidgets: Set<HomeWidget> {
+        didSet { saveAndNotify(key: Keys.homeWidgets, value: HomeWidget.serialize(homeWidgets)) }
+    }
+
     private enum Keys {
         static let searchEngine = "searchEngine"
         static let searchRegion = "searchRegion"
@@ -3759,6 +4167,9 @@ private final class AppPreferences {
         static let defaultCurrencySource = "defaultCurrencySource"
         static let defaultCurrencyTarget = "defaultCurrencyTarget"
         static let currencyAPIKey = "currencyAPIKey"
+        static let aiFilterEnabled = "aiFilterEnabled"
+        static let homeNotes = "homeNotes"
+        static let homeWidgets = "homeWidgets"
     }
 
     private let defaults = UserDefaults.standard
@@ -3778,6 +4189,13 @@ private final class AppPreferences {
         defaultCurrencySource = Self.currencyCode(for: Keys.defaultCurrencySource, defaults: defaults, fallback: .pln)
         defaultCurrencyTarget = Self.currencyCode(for: Keys.defaultCurrencyTarget, defaults: defaults, fallback: .usd)
         currencyAPIKey = defaults.string(forKey: Keys.currencyAPIKey) ?? ""
+        aiFilterEnabled = defaults.bool(forKey: Keys.aiFilterEnabled)
+        homeNotes = defaults.string(forKey: Keys.homeNotes) ?? ""
+        if let stored = defaults.string(forKey: Keys.homeWidgets) {
+            homeWidgets = HomeWidget.deserialize(stored)
+        } else {
+            homeWidgets = HomeWidget.defaultSet
+        }
     }
 
     private func saveAndNotify(key: String, value: Int) {
@@ -3786,6 +4204,11 @@ private final class AppPreferences {
     }
 
     private func saveAndNotify(key: String, value: String) {
+        defaults.set(value, forKey: key)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+
+    private func saveAndNotify(key: String, value: Bool) {
         defaults.set(value, forKey: key)
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
     }
@@ -7129,6 +7552,175 @@ private final class ToolbarActionButton: NSButton {
     }
 }
 
+// AI content filter ("stop-slop"): highlights AI writing tells in article text
+// and badges the page with a verdict. Pattern set adapted from
+// hardikpandya/stop-slop (phrases.md, structures.md).
+private enum AIFilter {
+    static let injectionScript = #"""
+    (() => {
+      const BADGE_ID = "northstar-slop-badge";
+      const STYLE_ID = "northstar-slop-style";
+      const MARK_ATTR = "data-northstar-slop";
+
+      const unwrap = () => {
+        document.querySelectorAll("[" + MARK_ATTR + "]").forEach((mark) => {
+          const parent = mark.parentNode;
+          if (!parent) return;
+          parent.replaceChild(document.createTextNode(mark.textContent), mark);
+          parent.normalize();
+        });
+        const old = document.getElementById(BADGE_ID);
+        if (old) old.remove();
+      };
+      unwrap();
+
+      const PHRASES = [
+        "here's what i find interesting", "here's the thing:", "here's the problem though",
+        "here's why that matters", "here's what", "here's this", "here's that", "here's why",
+        "the uncomfortable truth is", "it turns out", "the real", "let me be clear",
+        "the truth is,", "i'll say it again:", "i'm going to be honest", "can we talk about",
+        "full stop.", "let that sink in.", "this matters because", "make no mistake",
+        "game-changer", "double down", "deep dive", "take a step back", "moving forward",
+        "circle back", "on the same page", "lean into", "at its core", "in today's",
+        "it's worth noting", "at the end of the day", "when it comes to", "in a world where",
+        "the reality is", "hint:", "plot twist:", "spoiler:", "you already know this, but",
+        "but that's another post", "is a feature, not a bug", "dressed up as",
+        "the rest of this essay explains", "let me walk you through", "in this section, we'll",
+        "as we'll see", "i want to explore", "creeps in", "they exist, i promise",
+        "this is genuinely hard", "this is what leadership actually looks like",
+        "this is what", "actually matters", "the reasons are structural",
+        "the implications are significant", "this is the deepest problem",
+        "the stakes are high", "the consequences are real"
+      ];
+      const WORDS = [
+        "really", "just", "literally", "genuinely", "honestly", "simply", "actually",
+        "deeply", "truly", "fundamentally", "inherently", "inevitably", "interestingly",
+        "importantly", "crucially", "navigate", "unpack", "landscape"
+      ];
+
+      const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const phrasePattern = PHRASES.slice().sort((a, b) => b.length - a.length).map(escapeRe).join("|");
+      const wordPattern = "\\b(" + WORDS.map(escapeRe).join("|") + ")\\b";
+      const combined = new RegExp("(" + phrasePattern + ")|" + wordPattern + "|(—)", "gi");
+
+      const root = document.querySelector("article") || document.querySelector("main")
+        || document.querySelector("[role=main]") || document.body;
+      if (!root) return;
+
+      const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEXTAREA", "CODE", "PRE", "INPUT", "SELECT", "OPTION", "BUTTON"]);
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          if (!node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          if (SKIP.has(parent.tagName)) return NodeFilter.FILTER_REJECT;
+          if (parent.isContentEditable) return NodeFilter.FILTER_REJECT;
+          if (parent.closest("#" + BADGE_ID)) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      });
+
+      const targets = [];
+      let scanned = 0;
+      let node;
+      while ((node = walker.nextNode()) && scanned < 8000) { targets.push(node); scanned += 1; }
+
+      let phraseHits = 0, wordHits = 0, dashHits = 0, words = 0;
+      const MAX_MARKS = 800;
+      for (const textNode of targets) {
+        const text = textNode.nodeValue;
+        words += (text.match(/\S+/g) || []).length;
+        combined.lastIndex = 0;
+        if (!combined.test(text)) continue;
+        combined.lastIndex = 0;
+        const frag = document.createDocumentFragment();
+        let last = 0, match, local = 0;
+        while ((match = combined.exec(text)) !== null) {
+          if (phraseHits + wordHits + dashHits >= MAX_MARKS) break;
+          const start = match.index;
+          const end = start + match[0].length;
+          if (end === start) { combined.lastIndex += 1; continue; }
+          if (start > last) frag.appendChild(document.createTextNode(text.slice(last, start)));
+          const mark = document.createElement("mark");
+          mark.setAttribute(MARK_ATTR, "1");
+          mark.textContent = match[0];
+          frag.appendChild(mark);
+          last = end;
+          local += 1;
+          if (match[1]) phraseHits += 1; else if (match[3]) dashHits += 1; else wordHits += 1;
+        }
+        if (local > 0) {
+          if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+          textNode.parentNode.replaceChild(frag, textNode);
+        }
+        if (phraseHits + wordHits + dashHits >= MAX_MARKS) break;
+      }
+
+      const total = phraseHits + wordHits + dashHits;
+      const score = phraseHits * 3 + dashHits * 1.2 + wordHits * 0.5;
+      const per1k = words > 0 ? (score / words) * 1000 : 0;
+      let verdict, level;
+      if (total === 0) { verdict = "Чисто — ИИ-маркеров не найдено"; level = "ok"; }
+      else if (per1k >= 22 || phraseHits >= 8) { verdict = "Вероятно ИИ-текст"; level = "high"; }
+      else if (per1k >= 10 || phraseHits >= 3) { verdict = "Возможно ИИ-текст"; level = "mid"; }
+      else { verdict = "Похоже на человека"; level = "low"; }
+
+      if (!document.getElementById(STYLE_ID)) {
+        const style = document.createElement("style");
+        style.id = STYLE_ID;
+        style.textContent = "[" + MARK_ATTR + "]{background:linear-gradient(transparent 58%, rgba(255,86,86,0.5) 0) !important;color:inherit !important;border-radius:2px;}"
+          + "#" + BADGE_ID + "{position:fixed;top:14px;right:14px;z-index:2147483646;font:600 13px/1.35 -apple-system,Segoe UI,sans-serif;color:#fff;background:rgba(18,22,27,0.94);border:1px solid rgba(255,255,255,0.16);border-radius:14px;padding:11px 13px;box-shadow:0 14px 34px rgba(0,0,0,0.45);backdrop-filter:blur(14px);max-width:260px;}"
+          + "#" + BADGE_ID + " .nss-row{display:flex;align-items:center;gap:8px;font-weight:700;}"
+          + "#" + BADGE_ID + " .nss-dot{width:11px;height:11px;border-radius:50%;flex:none;}"
+          + "#" + BADGE_ID + " small{display:block;margin-top:5px;color:rgba(255,255,255,0.6);font-weight:500;}"
+          + "#" + BADGE_ID + " button{margin-top:9px;width:100%;border:1px solid rgba(255,255,255,0.2);background:rgba(255,255,255,0.08);color:#fff;border-radius:9px;padding:6px;font:600 12px sans-serif;cursor:pointer;}"
+          + ".nss-high{background:#ff5656;}.nss-mid{background:#ffb02e;}.nss-low{background:#6cc36c;}.nss-ok{background:#4f9dff;}";
+        document.documentElement.appendChild(style);
+      }
+
+      const badge = document.createElement("div");
+      badge.id = BADGE_ID;
+      const head = document.createElement("div");
+      head.className = "nss-row";
+      head.innerHTML = '<span class="nss-dot nss-' + level + '"></span><span>' + verdict + '</span>';
+      const detail = document.createElement("small");
+      detail.textContent = "Сигналов: " + total + " (фразы " + phraseHits + ", наречия " + wordHits + ", тире " + dashHits + ")";
+      badge.appendChild(head);
+      badge.appendChild(detail);
+      if (total > 0) {
+        const btn = document.createElement("button");
+        btn.textContent = "Скрыть подсветку";
+        let hidden = false;
+        btn.addEventListener("click", () => {
+          hidden = !hidden;
+          document.querySelectorAll("[" + MARK_ATTR + "]").forEach((m) => {
+            m.style.background = hidden ? "transparent" : "";
+          });
+          btn.textContent = hidden ? "Показать подсветку" : "Скрыть подсветку";
+        });
+        badge.appendChild(btn);
+      }
+      document.documentElement.appendChild(badge);
+    })();
+    """#
+
+    static let removalScript = #"""
+    (() => {
+      const MARK_ATTR = "data-northstar-slop";
+      document.querySelectorAll("[" + MARK_ATTR + "]").forEach((mark) => {
+        const parent = mark.parentNode;
+        if (!parent) return;
+        parent.replaceChild(document.createTextNode(mark.textContent), mark);
+        parent.normalize();
+      });
+      const badge = document.getElementById("northstar-slop-badge");
+      if (badge) badge.remove();
+      const style = document.getElementById("northstar-slop-style");
+      if (style) style.remove();
+    })();
+    """#
+}
+
 private enum URLParser {
     static func url(from input: String, searchEngine: SearchEngine, region: SearchRegion, language: SearchLanguage) -> URL? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7189,6 +7781,192 @@ private enum URLParser {
         }
 
         return "https"
+    }
+}
+
+private enum CssScraperPage {
+    static func html(snapshot: CssScrapeSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
+        let colors = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
+        let source = snapshot.url.isEmpty ? "Неизвестный источник" : snapshot.url
+        let title = snapshot.title.isEmpty ? "Страница без заголовка" : snapshot.title
+        let host = URL(string: snapshot.url)?.host(percentEncoded: false) ?? snapshot.url
+
+        let emptyNote = #"<p class="empty">Ничего не найдено.</p>"#
+
+        let colorSwatches = snapshot.colors.isEmpty ? emptyNote : snapshot.colors.map { item in
+            """
+            <button class="swatch" data-copy="\(item.label)" title="Скопировать \(item.label)">
+              <span class="chip" style="background:\(item.label)"></span>
+              <span class="hex">\(item.label)</span>
+              <span class="cnt">\(item.count)</span>
+            </button>
+            """
+        }.joined()
+
+        let fontRows = snapshot.fonts.isEmpty ? emptyNote : snapshot.fonts.map { item in
+            """
+            <li>
+              <span class="fname" style="font-family:'\(item.label.htmlEscaped)', system-ui">\(item.label.htmlEscaped)</span>
+              <span class="cnt">\(item.count)</span>
+            </li>
+            """
+        }.joined()
+
+        let sizeChips = snapshot.fontSizes.isEmpty ? emptyNote : snapshot.fontSizes.map { item in
+            "<span class=\"size-chip\">\(item.label.htmlEscaped)<small>\(item.count)</small></span>"
+        }.joined()
+
+        let imageCards = snapshot.images.isEmpty ? emptyNote : snapshot.images.prefix(72).map { image in
+            let dimension = image.width > 0 ? "\(image.width)×\(image.height)" : "—"
+            let caption = image.alt.isEmpty ? "без описания" : image.alt.htmlEscaped
+            return """
+            <a class="imgcard" href="\(image.src.htmlEscaped)">
+              <span class="thumb"><img loading="lazy" src="\(image.src.htmlEscaped)" alt=""></span>
+              <span class="imeta"><span class="iname">\(caption)</span><span class="idim">\(dimension)</span></span>
+            </a>
+            """
+        }.joined()
+
+        func stat(_ value: String, _ label: String) -> String {
+            "<div class=\"stat\"><strong>\(value)</strong><span>\(label)</span></div>"
+        }
+        let stats = [
+            stat("\(snapshot.colors.count)", "Цветов"),
+            stat("\(snapshot.fonts.count)", "Шрифтов"),
+            stat("\(snapshot.images.count)", "Медиа"),
+            stat("\(snapshot.svgCount)", "SVG"),
+            stat("\(snapshot.videoCount)", "Видео"),
+            stat("\(snapshot.stylesheetCount)", "Таблиц стилей"),
+            stat("\(snapshot.ruleCount)", "CSS-правил"),
+            stat("\(snapshot.elementsScanned)", "Элементов")
+        ].joined()
+
+        func metaRow(_ label: String, _ value: String) -> String {
+            value.isEmpty ? "" : "<div class=\"mrow\"><span>\(label)</span><code>\(value.htmlEscaped)</code></div>"
+        }
+        let metaRows = [
+            metaRow("Описание", snapshot.description),
+            metaRow("theme-color", snapshot.themeColor),
+            metaRow("viewport", snapshot.viewport),
+            metaRow("generator", snapshot.generator)
+        ].joined()
+
+        return """
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <base target="_blank">
+          <title>\(cssScraperTitle)</title>
+          <style>
+            :root {
+              color-scheme: \(colors.colorScheme);
+              --bg: \(colors.background);
+              --panel: \(colors.panel);
+              --panel-strong: \(colors.panelStrong);
+              --text: \(colors.text);
+              --muted: \(colors.muted);
+              --line: \(colors.line);
+              --accent: \(colors.accent);
+              --shadow: \(colors.shadow);
+              --radius: \(design.radius);
+            }
+            * { box-sizing: border-box; }
+            body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+              font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+            main { width: min(100vw - 40px, \(design.settingsWidth)); margin: 0 auto; padding: 30px 0 56px; }
+            header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
+            .logo { width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center; flex: none;
+              background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #8a5cff));
+              color: #07121a; }
+            .logo svg { width: 26px; height: 26px; }
+            header h1 { margin: 0; font-size: 21px; }
+            header p { margin: 3px 0 0; color: var(--muted); font-size: 13px; word-break: break-all; }
+            section { background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line);
+              border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow); }
+            section h2 { margin: 0 0 14px; font-size: 15px; letter-spacing: 0.01em; }
+            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+            .stat { background: var(--panel-strong); border: 1px solid var(--line); border-radius: 12px; padding: 12px; text-align: center; }
+            .stat strong { display: block; font-size: 22px; }
+            .stat span { color: var(--muted); font-size: 12px; }
+            .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
+            .swatch { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 1px solid var(--line);
+              border-radius: 12px; overflow: hidden; background: var(--panel-strong); cursor: pointer; color: inherit; text-align: left; font: inherit; }
+            .swatch:hover { border-color: var(--accent); }
+            .chip { display: block; height: 64px; }
+            .swatch .hex { padding: 0 10px; font-variant: small-caps; text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; }
+            .swatch .cnt { padding: 0 10px 9px; color: var(--muted); font-size: 12px; }
+            ul.fonts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+            ul.fonts li { display: flex; justify-content: space-between; align-items: center; gap: 12px;
+              padding: 11px 14px; background: var(--panel-strong); border: 1px solid var(--line); border-radius: 11px; }
+            .fname { font-size: 17px; }
+            .cnt { color: var(--muted); font-size: 12px; flex: none; }
+            .sizes { display: flex; flex-wrap: wrap; gap: 8px; }
+            .size-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 11px; border-radius: 999px;
+              background: var(--panel-strong); border: 1px solid var(--line); font-weight: 600; }
+            .size-chip small { color: var(--muted); font-weight: 500; }
+            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+            .imgcard { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px;
+              overflow: hidden; background: var(--panel-strong); text-decoration: none; color: inherit; }
+            .imgcard:hover { border-color: var(--accent); }
+            .thumb { height: 110px; display: grid; place-items: center; background:
+              repeating-conic-gradient(color-mix(in srgb, var(--muted) 18%, transparent) 0% 25%, transparent 0% 50%) 0 / 18px 18px; overflow: hidden; }
+            .thumb img { max-width: 100%; max-height: 110px; object-fit: contain; }
+            .imeta { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
+            .iname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .idim { font-size: 11px; color: var(--muted); }
+            .mrow { display: flex; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+            .mrow:last-child { border-bottom: 0; }
+            .mrow span { color: var(--muted); min-width: 110px; flex: none; }
+            .mrow code { word-break: break-all; }
+            .empty { color: var(--muted); margin: 0; }
+            .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px);
+              background: var(--accent); color: #07121a; font-weight: 700; padding: 9px 16px; border-radius: 999px;
+              opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none; }
+            .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+          </style>
+        </head>
+        <body>
+          <main>
+            <header>
+              <span class="logo">\(brandMarkSVG)</span>
+              <div>
+                <h1>\(cssScraperTitle) · \(title.htmlEscaped)</h1>
+                <p>\(host.htmlEscaped) — <a href="\(source.htmlEscaped)">\(source.htmlEscaped)</a></p>
+              </div>
+            </header>
+            <section><h2>Сводка</h2><div class="stats">\(stats)</div></section>
+            <section><h2>Цвета</h2><div class="swatches">\(colorSwatches)</div></section>
+            <section><h2>Шрифты</h2><ul class="fonts">\(fontRows)</ul></section>
+            <section><h2>Размеры шрифта</h2><div class="sizes">\(sizeChips)</div></section>
+            <section><h2>Медиафайлы</h2><div class="grid">\(imageCards)</div></section>
+            \(metaRows.isEmpty ? "" : "<section><h2>Мета</h2>\(metaRows)</section>")
+          </main>
+          <div class="toast" id="toast">Скопировано</div>
+          <script>
+            const toast = document.getElementById("toast");
+            const flash = (text) => {
+              toast.textContent = text;
+              toast.classList.add("show");
+              setTimeout(() => toast.classList.remove("show"), 1100);
+            };
+            document.querySelectorAll(".swatch").forEach((btn) => {
+              btn.addEventListener("click", () => {
+                const value = btn.getAttribute("data-copy");
+                const ta = document.createElement("textarea");
+                ta.value = value;
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand("copy"); } catch (e) {}
+                ta.remove();
+                flash(value + " скопирован");
+              });
+            });
+          </script>
+        </body>
+        </html>
+        """
     }
 }
 
@@ -7612,7 +8390,7 @@ private enum SiteIconHTML {
 }
 
 private enum HomePage {
-    static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry]) -> String {
+    static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry], widgets: Set<HomeWidget>, notes: String) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
         let engineLogo = searchEngine.logoURL.htmlEscaped
@@ -7659,6 +8437,87 @@ private enum HomePage {
                 <strong>\(link.title.htmlEscaped)</strong>
                 <small>\(link.host.htmlEscaped)</small>
               </span>
+            </a>
+            """
+        }.joined()
+
+        let quickLinkTitle = bookmarks.isEmpty ? "Быстрые ссылки" : "Закладки"
+        let recentBody = recentMarkup.isEmpty
+            ? "<p class=\"empty\">История пока пуста — откройте первую страницу.</p>"
+            : "<div class=\"recent\">\(recentMarkup)</div>"
+
+        let linksPanel = """
+        <div class="panel" data-widget="links">
+          <div class="panel-head">
+            <h2>\(quickLinkTitle)</h2>
+            <a class="panel-link" href="\(northStarSettingsScheme)://update?section=bookmarks">Все закладки →</a>
+          </div>
+          <nav class="quick" aria-label="Быстрые ссылки">\(quickLinksMarkup)</nav>
+        </div>
+        """
+        let recentPanel = """
+        <div class="panel" data-widget="recent">
+          <div class="panel-head">
+            <h2>Недавние</h2>
+            <a class="panel-link" href="\(northStarSettingsScheme)://update?section=history">История →</a>
+          </div>
+          \(recentBody)
+        </div>
+        """
+        let worldClockPanel = """
+        <div class="panel" data-widget="worldclock">
+          <div class="panel-head"><h2>Мировые часы</h2></div>
+          <div class="worldclock" id="worldclock"></div>
+        </div>
+        """
+        let notesPanel = """
+        <div class="panel" data-widget="notes">
+          <div class="panel-head"><h2>Заметка</h2><span class="note-status" id="noteStatus"></span></div>
+          <textarea class="notes-area" id="notesArea" placeholder="Запишите мысль — сохранится автоматически">\(notes.htmlEscaped)</textarea>
+        </div>
+        """
+        let tipsPanel = """
+        <div class="panel" data-widget="tips">
+          <div class="panel-head"><h2>Горячие клавиши</h2></div>
+          <ul class="tips">
+            <li><kbd>⌘T</kbd><span>Новая вкладка</span></li>
+            <li><kbd>⌘W</kbd><span>Закрыть вкладку</span></li>
+            <li><kbd>⌘F</kbd><span>Поиск на странице</span></li>
+            <li><kbd>⌘,</kbd><span>Настройки</span></li>
+            <li><kbd>⌘Q</kbd><span>Выйти из NorthStar</span></li>
+          </ul>
+        </div>
+        """
+
+        let clockSection = widgets.contains(.clock) ? """
+        <section class="hero" aria-label="Время">
+          <div class="clock" id="clock">--:--:--</div>
+          <p class="greeting" id="greeting">Добро пожаловать</p>
+          <p class="date" id="date"></p>
+        </section>
+        """ : ""
+
+        let widgetHTML: [HomeWidget: String] = [
+            .links: linksPanel,
+            .recent: recentPanel,
+            .worldclock: worldClockPanel,
+            .notes: notesPanel,
+            .tips: tipsPanel
+        ]
+        let gridItems = HomeWidget.allCases
+            .filter { $0 != .clock && widgets.contains($0) }
+            .compactMap { widgetHTML[$0] }
+            .joined()
+        let dashboardWidgets = gridItems.isEmpty
+            ? "<section class=\"widgets-grid\"><p class=\"empty\">Все виджеты выключены. Нажмите «＋ Виджеты», чтобы добавить.</p></section>"
+            : "<section class=\"widgets-grid\" aria-label=\"Виджеты\">\(gridItems)</section>"
+
+        let widgetPickerItems = HomeWidget.allCases.map { widget in
+            let on = widgets.contains(widget)
+            return """
+            <a class="wp-item\(on ? " on" : "")" href="\(northStarSearchScheme)://widgets?toggle=\(widget.rawValue)">
+              <span class="wp-text"><strong>\(widget.title)</strong><small>\(widget.summary)</small></span>
+              <span class="wp-toggle">\(on ? "Вкл" : "Выкл")</span>
             </a>
             """
         }.joined()
@@ -8142,19 +9001,76 @@ private enum HomePage {
               button { min-height: 46px; padding: 0 20px; }
               .quick { grid-template-columns: 1fr; }
             }
+            .topbar-actions { display: inline-flex; gap: 8px; align-items: center; }
+            button.chip { cursor: pointer; font-family: inherit; }
+            .widget-panel {
+              border: 1px solid var(--line);
+              border-radius: 16px;
+              background: color-mix(in srgb, var(--panel) 88%, transparent);
+              backdrop-filter: blur(14px);
+              padding: 14px 16px;
+              animation: rise 0.35s ease both;
+            }
+            .widget-panel[hidden] { display: none; }
+            .wp-head { font-size: 13px; font-weight: 700; color: var(--muted); margin-bottom: 10px; }
+            .wp-list { display: grid; gap: 8px; }
+            .wp-item {
+              display: flex; align-items: center; justify-content: space-between; gap: 12px;
+              padding: 11px 13px; border: 1px solid var(--line); border-radius: 12px;
+              text-decoration: none; color: var(--text);
+              background: color-mix(in srgb, var(--panel-strong) 70%, transparent);
+              transition: border-color 0.16s, background 0.16s;
+            }
+            .wp-item:hover { border-color: var(--accent); }
+            .wp-item.on { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
+            .wp-text { display: flex; flex-direction: column; gap: 2px; }
+            .wp-text small { color: var(--muted); font-size: 12px; }
+            .wp-toggle {
+              flex: none; font-size: 12px; font-weight: 700; padding: 4px 11px; border-radius: 999px;
+              color: var(--muted); background: color-mix(in srgb, var(--muted) 16%, transparent);
+            }
+            .wp-item.on .wp-toggle { color: #07121a; background: var(--accent); }
+            .widgets-grid {
+              display: grid; gap: var(--gap);
+              grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            }
+            .worldclock { display: grid; gap: 8px; }
+            .wc-row {
+              display: flex; align-items: center; justify-content: space-between;
+              padding: 9px 12px; border-radius: 11px; border: 1px solid var(--line);
+              background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
+            }
+            .wc-row b { font-variant-numeric: tabular-nums; font-size: 16px; }
+            .notes-area {
+              width: 100%; min-height: 132px; resize: vertical; border-radius: 12px;
+              border: 1px solid var(--line); background: color-mix(in srgb, var(--panel-strong) 60%, transparent);
+              color: var(--text); padding: 11px 13px; font: 14px -apple-system, system-ui, sans-serif; line-height: 1.5;
+            }
+            .notes-area:focus { outline: none; border-color: var(--accent); }
+            .note-status { font-size: 12px; color: var(--accent); font-weight: 600; }
+            ul.tips { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+            ul.tips li { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+            ul.tips kbd {
+              flex: none; min-width: 42px; text-align: center; padding: 4px 8px; border-radius: 8px;
+              border: 1px solid var(--line); background: var(--panel-strong); color: var(--text);
+              font: 600 12px ui-monospace, monospace;
+            }
           </style>
         </head>
         <body>
           <main>
             <header class="topbar" aria-label="NorthStar">
               <div class="brand"><span class="brand-mark">\(brandMarkSVG)</span> NorthStar</div>
-              <a class="chip" href="\(northStarSettingsScheme)://home">Настройки</a>
+              <div class="topbar-actions">
+                <button class="chip" id="widgetToggle" type="button" aria-expanded="false">＋ Виджеты</button>
+                <a class="chip" href="\(northStarSettingsScheme)://home">Настройки</a>
+              </div>
             </header>
-            <section class="hero" aria-label="Время">
-              <div class="clock" id="clock">--:--</div>
-              <p class="greeting" id="greeting">Добро пожаловать</p>
-              <p class="date" id="date"></p>
-            </section>
+            <div class="widget-panel" id="widgetPanel" hidden>
+              <div class="wp-head">Виджеты главного экрана</div>
+              <div class="wp-list">\(widgetPickerItems)</div>
+            </div>
+            \(clockSection)
             <section class="command" aria-label="Поиск">
               <form class="search" id="searchForm">
                 <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>
@@ -8182,22 +9098,7 @@ private enum HomePage {
                 </label>
               </div>
             </section>
-            <section class="dashboard" aria-label="Быстрый старт">
-              <div class="panel">
-                <div class="panel-head">
-                  <h2>\(bookmarks.isEmpty ? "Быстрые ссылки" : "Закладки")</h2>
-                  <a class="panel-link" href="\(northStarSettingsScheme)://update?section=bookmarks">Все закладки →</a>
-                </div>
-                <nav class="quick" aria-label="Быстрые ссылки">\(quickLinksMarkup)</nav>
-              </div>
-              <div class="panel">
-                <div class="panel-head">
-                  <h2>Недавние</h2>
-                  <a class="panel-link" href="\(northStarSettingsScheme)://update?section=history">История →</a>
-                </div>
-                \(recentMarkup.isEmpty ? "<p class=\"empty\">История пока пуста — откройте первую страницу.</p>" : "<div class=\"recent\">\(recentMarkup)</div>")
-              </div>
-            </section>
+            \(dashboardWidgets)
           </main>
           <script>
             const form = document.getElementById("searchForm");
@@ -8209,15 +9110,63 @@ private enum HomePage {
             const clock = document.getElementById("clock");
             const greeting = document.getElementById("greeting");
             const dateLine = document.getElementById("date");
-            const updateClock = () => {
+            const worldclock = document.getElementById("worldclock");
+            const zones = [
+              { city: "Сан-Франциско", tz: "America/Los_Angeles" },
+              { city: "Нью-Йорк", tz: "America/New_York" },
+              { city: "Лондон", tz: "Europe/London" },
+              { city: "Москва", tz: "Europe/Moscow" },
+              { city: "Токио", tz: "Asia/Tokyo" }
+            ];
+            if (worldclock) {
+              worldclock.innerHTML = zones.map((z) =>
+                '<div class="wc-row"><span>' + z.city + '</span><b data-tz="' + z.tz + '">--:--</b></div>'
+              ).join("");
+            }
+            const tick = () => {
               const now = new Date();
-              clock.textContent = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-              dateLine.textContent = now.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
-              const hour = now.getHours();
-              greeting.textContent = hour < 5 ? "Доброй ночи" : hour < 12 ? "Доброе утро" : hour < 18 ? "Добрый день" : "Добрый вечер";
+              if (clock) {
+                clock.textContent = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+              }
+              if (dateLine) {
+                dateLine.textContent = now.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
+              }
+              if (greeting) {
+                const hour = now.getHours();
+                greeting.textContent = hour < 5 ? "Доброй ночи" : hour < 12 ? "Доброе утро" : hour < 18 ? "Добрый день" : "Добрый вечер";
+              }
+              if (worldclock) {
+                worldclock.querySelectorAll("b[data-tz]").forEach((node) => {
+                  node.textContent = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit", timeZone: node.getAttribute("data-tz") });
+                });
+              }
             };
-            updateClock();
-            setInterval(updateClock, 15000);
+            tick();
+            setInterval(tick, 1000);
+
+            const widgetToggle = document.getElementById("widgetToggle");
+            const widgetPanel = document.getElementById("widgetPanel");
+            if (widgetToggle && widgetPanel) {
+              widgetToggle.addEventListener("click", () => {
+                const open = widgetPanel.hasAttribute("hidden");
+                if (open) { widgetPanel.removeAttribute("hidden"); } else { widgetPanel.setAttribute("hidden", ""); }
+                widgetToggle.setAttribute("aria-expanded", open ? "true" : "false");
+              });
+            }
+
+            const notesArea = document.getElementById("notesArea");
+            const noteStatus = document.getElementById("noteStatus");
+            if (notesArea) {
+              let lastSaved = notesArea.value;
+              const saveNote = () => {
+                if (notesArea.value === lastSaved) return;
+                lastSaved = notesArea.value;
+                if (noteStatus) noteStatus.textContent = "Сохранено";
+                const params = new URLSearchParams({ note: notesArea.value });
+                window.location.href = "\(northStarSearchScheme)://widgets?" + params.toString();
+              };
+              notesArea.addEventListener("blur", saveNote);
+            }
             const updateEngineLogo = () => {
               const option = engine.selectedOptions[0];
               if (!option?.dataset.logo) return;
