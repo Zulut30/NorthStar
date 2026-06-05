@@ -5941,16 +5941,20 @@ private final class TabRowView: NSView {
             layer?.backgroundColor = isActive
                 ? activeColor.cgColor
                 : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor)
-            layer?.borderWidth = isActive ? 0.5 : 0
-            layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.16).cgColor
+            layer?.borderWidth = isActive ? 1 : 0
+            layer?.borderColor = isActive
+                ? accent.withAlphaComponent(0.34).cgColor
+                : NSColor.separatorColor.withAlphaComponent(0.16).cgColor
         } else {
-            let activeColor = accent.withAlphaComponent(0.11)
+            let activeColor = accent.withAlphaComponent(0.12)
             let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.22)
             layer?.backgroundColor = isActive
                 ? activeColor.cgColor
                 : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor)
-            layer?.borderWidth = 0
-            layer?.borderColor = NSColor.clear.cgColor
+            layer?.borderWidth = isActive ? 1 : 0
+            layer?.borderColor = isActive
+                ? accent.withAlphaComponent(0.26).cgColor
+                : NSColor.clear.cgColor
             indicatorView.layer?.backgroundColor = isActive
                 ? accent.cgColor
                 : NSColor.clear.cgColor
@@ -6458,6 +6462,38 @@ private enum ReaderPage {
     }
 }
 
+private enum SiteIconHTML {
+    static func letter(for title: String) -> String {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let first = trimmed.first else { return "•" }
+        return String(first).uppercased().htmlEscaped
+    }
+
+    static func iconURL(for siteURL: String) -> String? {
+        guard let url = URL(string: siteURL),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = url.host(percentEncoded: false)?.lowercased(),
+              !host.isEmpty,
+              host != "localhost", host != "127.0.0.1", !host.hasSuffix(".local") else {
+            return nil
+        }
+
+        return "https://icons.duckduckgo.com/ip3/\(host).ico"
+    }
+
+    /// Letter tile with the real site icon layered on top; the image removes
+    /// itself on load failure so the gradient letter stays as the fallback.
+    static func markup(url: String, title: String, cssClass: String) -> String {
+        let letterMarkup = "<span>\(letter(for: title))</span>"
+        guard let iconURL = iconURL(for: url) else {
+            return "<span class=\"\(cssClass)\">\(letterMarkup)</span>"
+        }
+
+        return "<span class=\"\(cssClass)\">\(letterMarkup)<img src=\"\(iconURL.htmlEscaped)\" alt=\"\" loading=\"lazy\" onerror=\"this.remove()\"></span>"
+    }
+}
+
 private enum HomePage {
     static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry]) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
@@ -6475,17 +6511,11 @@ private enum HomePage {
             let selected = option == searchLanguage ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.displayTitle.htmlEscaped)</option>"
         }.joined()
-        func tileLetter(_ title: String) -> String {
-            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let first = trimmed.first else { return "•" }
-            return String(first).uppercased().htmlEscaped
-        }
-
         let recentMarkup = recentHistory.prefix(8).enumerated().map { index, entry in
             let host = URL(string: entry.url)?.host(percentEncoded: false) ?? entry.url
             return """
             <a class="recent-item" href="\(entry.url.htmlEscaped)" style="--i: \(index)">
-              <span class="site-dot">\(tileLetter(entry.title))</span>
+              \(SiteIconHTML.markup(url: entry.url, title: entry.title, cssClass: "site-dot"))
               <span class="recent-copy">
                 <strong>\(entry.title.htmlEscaped)</strong>
                 <small>\(host.htmlEscaped)</small>
@@ -6507,7 +6537,7 @@ private enum HomePage {
         let quickLinksMarkup = quickLinkSources.enumerated().map { index, link in
             """
             <a class="quick-link" href="\(link.url.htmlEscaped)" style="--i: \(index)">
-              <span class="tile-icon">\(tileLetter(link.title))</span>
+              \(SiteIconHTML.markup(url: link.url, title: link.title, cssClass: "tile-icon"))
               <span class="tile-copy">
                 <strong>\(link.title.htmlEscaped)</strong>
                 <small>\(link.host.htmlEscaped)</small>
@@ -6846,6 +6876,8 @@ private enum HomePage {
               width: 42px;
               height: 42px;
               flex: none;
+              position: relative;
+              overflow: hidden;
               display: grid;
               place-items: center;
               border-radius: 13px;
@@ -6856,6 +6888,18 @@ private enum HomePage {
               filter: hue-rotate(calc(var(--i, 0) * 26deg));
               box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28), 0 8px 18px color-mix(in srgb, var(--accent) 22%, transparent);
             }
+            .tile-icon img,
+            .site-dot img {
+              position: absolute;
+              inset: 0;
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
+              padding: 8px;
+              background: color-mix(in srgb, white 94%, var(--accent));
+              filter: hue-rotate(calc(var(--i, 0) * -26deg));
+            }
+            .site-dot img { padding: 6px; filter: hue-rotate(calc(var(--i, 0) * -22deg)); }
             .tile-copy,
             .recent-copy {
               min-width: 0;
@@ -6893,6 +6937,8 @@ private enum HomePage {
               width: 34px;
               height: 34px;
               flex: none;
+              position: relative;
+              overflow: hidden;
               display: grid;
               place-items: center;
               border-radius: 11px;
@@ -7093,6 +7139,29 @@ private enum SettingsSection: String, CaseIterable {
         }
     }
 
+    var icon: String {
+        switch self {
+        case .overview:
+            return "✦"
+        case .search:
+            return "🔍"
+        case .appearance:
+            return "🎨"
+        case .browser:
+            return "🧭"
+        case .currency:
+            return "💱"
+        case .performance:
+            return "⚡️"
+        case .bookmarks:
+            return "⭐️"
+        case .history:
+            return "🕘"
+        case .downloads:
+            return "📥"
+        }
+    }
+
     init?(identifier: String) {
         let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard let section = Self.allCases.first(where: { $0.identifier == normalized }) else {
@@ -7117,8 +7186,8 @@ private enum SettingsPage {
             let active = section == activeSection ? " active" : ""
             return """
             <button class="nav-item\(active)" type="button" data-section="\(section.identifier.htmlEscaped)">
+              <span class="nav-icon">\(section.icon)</span>
               <strong>\(section.title.htmlEscaped)</strong>
-              <span>\(section.subtitle.htmlEscaped)</span>
             </button>
             """
         }.joined()
@@ -7171,7 +7240,8 @@ private enum SettingsPage {
             let openURL = "\(northStarSettingsScheme)://open?url=\(entry.url.urlQueryEscaped)"
             return """
             <a class="list-row" href="\(openURL)">
-              <span class="row-main">
+              \(SiteIconHTML.markup(url: entry.url, title: entry.title, cssClass: "site-icon"))
+              <span class="row-copy">
                 <strong>\(entry.title.htmlEscaped)</strong>
                 <small>\(entry.url.htmlEscaped)</small>
               </span>
@@ -7186,8 +7256,11 @@ private enum SettingsPage {
             return """
             <div class="list-row bookmark-row">
               <a class="row-main" href="\(openURL)">
-                <strong>\(entry.title.htmlEscaped)</strong>
-                <small>\(entry.url.htmlEscaped)</small>
+                \(SiteIconHTML.markup(url: entry.url, title: entry.title, cssClass: "site-icon"))
+                <span class="row-copy">
+                  <strong>\(entry.title.htmlEscaped)</strong>
+                  <small>\(entry.url.htmlEscaped)</small>
+                </span>
               </a>
               <span class="row-meta">
                 <time>\(DateDisplay.string(from: entry.date).htmlEscaped)</time>
@@ -7201,7 +7274,8 @@ private enum SettingsPage {
             let error = entry.errorMessage.map { "<small>\($0.htmlEscaped)</small>" } ?? "<small>\(entry.destinationPath.htmlEscaped)</small>"
             return """
             <div class="list-row">
-              <span class="row-main">
+              <span class="site-icon file-icon">\(SiteIconHTML.letter(for: entry.fileName))</span>
+              <span class="row-copy">
                 <strong>\(entry.fileName.htmlEscaped)</strong>
                 \(error)
               </span>
@@ -7213,14 +7287,14 @@ private enum SettingsPage {
         let performanceMarkup = performance.samples.prefix(30).map { sample in
             return """
             <div class="list-row">
-              <span class="row-main">
+              \(SiteIconHTML.markup(url: sample.url, title: sample.title, cssClass: "site-icon"))
+              <span class="row-copy">
                 <strong>\(sample.title.htmlEscaped)</strong>
                 <small>\(sample.url.htmlEscaped)</small>
               </span>
               <span class="row-meta">
                 <span class="status \(sample.status.rawValue)">\(sample.status.title.htmlEscaped)</span>
                 <strong class="duration">\(PerformanceDisplay.duration(sample.duration).htmlEscaped)</strong>
-                <time>\(DateDisplay.string(from: sample.date).htmlEscaped)</time>
               </span>
             </div>
             """
@@ -7255,14 +7329,31 @@ private enum SettingsPage {
               min-height: 100vh;
               font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
               color: var(--text);
+              background: var(--bg);
+              -webkit-font-smoothing: antialiased;
+            }
+            body::after {
+              content: "";
+              position: fixed;
+              inset: 0;
+              pointer-events: none;
               background:
-                linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 32%),
-                var(--bg);
+                radial-gradient(600px 400px at 10% -6%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 70%),
+                radial-gradient(700px 480px at 94% 108%, color-mix(in srgb, var(--accent-2) 10%, transparent), transparent 72%);
+            }
+            @keyframes rise {
+              from { opacity: 0; transform: translateY(10px); }
+              to { opacity: 1; transform: none; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+              *, *::before, *::after { animation: none !important; transition: none !important; }
             }
             .settings-shell {
+              position: relative;
+              z-index: 1;
               min-height: 100vh;
               display: grid;
-              grid-template-columns: 244px minmax(0, 1fr);
+              grid-template-columns: 236px minmax(0, 1fr);
             }
             .sidebar {
               position: sticky;
@@ -7270,173 +7361,193 @@ private enum SettingsPage {
               height: 100vh;
               display: grid;
               align-content: start;
-              gap: 18px;
+              gap: 14px;
+              padding: 16px 12px;
               border-right: 1px solid var(--line);
-              background: color-mix(in srgb, var(--panel-strong) 76%, var(--bg));
-              padding: 18px 12px;
+              background: color-mix(in srgb, var(--panel-strong) 62%, var(--bg));
+              backdrop-filter: blur(18px);
             }
             .brand {
-              display: grid;
-              gap: 4px;
-              padding: 8px 10px 10px;
+              display: flex;
+              align-items: center;
+              gap: 10px;
+              padding: 6px 8px 14px;
               border-bottom: 1px solid var(--line);
             }
-            .brand strong {
-              font-size: 20px;
-              line-height: 1;
-            }
-            .brand span,
-            .nav-item span,
-            .muted {
-              color: var(--muted);
-              font-size: 13px;
-            }
-            .nav {
+            .brand-mark {
+              width: 32px;
+              height: 32px;
+              flex: none;
               display: grid;
-              gap: 5px;
+              place-items: center;
+              border-radius: 10px;
+              color: #071015;
+              font-size: 12px;
+              font-weight: 900;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
+              box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 35%, transparent), inset 0 0 0 1px rgba(255,255,255,0.25);
             }
-            .nav-item,
-            .overview-card {
+            .brand div { display: grid; gap: 1px; min-width: 0; }
+            .brand strong { font-size: 15px; line-height: 1.1; }
+            .brand span { color: var(--muted); font-size: 11.5px; }
+            .muted { color: var(--muted); font-size: 13.5px; }
+            .nav { display: grid; gap: 3px; }
+            .nav-item {
               appearance: none;
+              display: flex;
+              align-items: center;
+              gap: 10px;
               width: 100%;
+              min-height: 42px;
+              padding: 0 10px;
               border: 1px solid transparent;
-              border-radius: var(--radius);
+              border-radius: 11px;
               background: transparent;
-              color: var(--text);
+              color: var(--muted);
+              font: inherit;
               text-align: left;
               cursor: pointer;
+              transition: background 0.16s, color 0.16s, border-color 0.16s;
             }
-            .nav-item {
+            .nav-item strong { font-size: 13.5px; font-weight: 650; }
+            .nav-icon {
+              width: 27px;
+              height: 27px;
+              flex: none;
               display: grid;
-              gap: 4px;
-              min-height: 52px;
-              padding: 9px 11px;
+              place-items: center;
+              border: 1px solid var(--line);
+              border-radius: 8px;
+              background: color-mix(in srgb, var(--panel) 80%, transparent);
+              font-size: 13px;
             }
-            .nav-item strong {
-              font-size: 14px;
-              line-height: 1.15;
-            }
-            .nav-item.active,
             .nav-item:hover {
-              border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
-              background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+              color: var(--text);
+              background: color-mix(in srgb, var(--panel-strong) 64%, transparent);
+            }
+            .nav-item.active {
+              color: var(--text);
+              border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+              background: color-mix(in srgb, var(--accent) 13%, transparent);
+            }
+            .nav-item.active .nav-icon {
+              border-color: transparent;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
             }
             .content {
               min-width: 0;
               max-height: 100vh;
               overflow: auto;
-              padding: 28px;
+              padding: 32px 36px 48px;
             }
             .panel {
-              width: min(var(--settings-width), 100%);
+              width: min(var(--settings-width), 880px);
+              max-width: 100%;
               display: none;
-              gap: 14px;
+              gap: 16px;
               margin: 0 auto;
             }
-            .panel.active {
-              display: grid;
-            }
+            .panel.active { display: grid; animation: rise 0.35s ease both; }
             .panel-head {
-              display: grid;
-              grid-template-columns: minmax(0, 1fr) auto;
+              display: flex;
               justify-content: space-between;
+              align-items: flex-end;
               gap: 16px;
-              align-items: center;
-              border: 1px solid var(--line);
-              border-radius: calc(var(--radius) + 2px);
-              background: color-mix(in srgb, var(--panel) 86%, transparent);
-              box-shadow: 0 14px 34px var(--shadow);
-              padding: 18px;
+              padding: 0 2px 16px;
+              border-bottom: 1px solid var(--line);
             }
             h1, h2, h3, p { margin: 0; letter-spacing: 0; }
-            h1 { font-size: 28px; line-height: 1.05; }
-            h2 { font-size: 21px; line-height: 1.15; }
-            h3 { font-size: 15px; line-height: 1.2; }
-            .overview-grid,
-            .control-grid {
+            h1 { font-size: 28px; line-height: 1.1; font-weight: 800; }
+            h2 { font-size: 20px; line-height: 1.15; }
+            h3 { font-size: 14px; line-height: 1.25; font-weight: 750; }
+            .overview-grid {
               display: grid;
               grid-template-columns: repeat(2, minmax(0, 1fr));
-              gap: 12px;
+              gap: 10px;
+            }
+            .control-grid {
+              display: grid;
+              grid-template-columns: 1fr;
+              gap: 8px;
             }
             .overview-card,
             .setting-card,
             .metric,
             .list-row {
               border: 1px solid var(--line);
-              border-radius: var(--radius);
-              background: color-mix(in srgb, var(--panel) 88%, transparent);
-              box-shadow: 0 10px 24px color-mix(in srgb, var(--shadow) 76%, transparent);
+              border-radius: 16px;
+              background: color-mix(in srgb, var(--panel) 86%, transparent);
+              box-shadow: 0 10px 28px color-mix(in srgb, var(--shadow) 55%, transparent);
+              backdrop-filter: blur(14px);
             }
             .overview-card {
-              min-height: 96px;
+              appearance: none;
+              min-height: 86px;
               display: grid;
               align-content: center;
-              gap: 7px;
+              gap: 6px;
               padding: 16px;
+              color: var(--text);
+              font: inherit;
+              text-align: left;
+              cursor: pointer;
+              transition: border-color 0.16s, transform 0.16s;
             }
             .overview-card:hover {
               border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+              transform: translateY(-2px);
             }
-            .overview-card span {
-              color: var(--muted);
-              font-size: 13px;
-            }
+            .overview-card span { color: var(--muted); font-size: 12.5px; }
             .setting-card {
-              min-height: 96px;
               display: grid;
-              align-content: center;
-              gap: 10px;
-              padding: 16px;
+              gap: 6px;
+              padding: 13px 16px;
             }
             label {
               display: grid;
-              gap: 8px;
+              grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+              align-items: center;
+              gap: 16px;
             }
-            label span {
-              color: var(--muted);
-              font-size: 12px;
-              font-weight: 700;
-              text-transform: uppercase;
-            }
+            label span { color: var(--text); font-size: 13.5px; font-weight: 650; }
             select,
             input {
               appearance: none;
               -webkit-appearance: none;
               width: 100%;
               min-width: 0;
-              min-height: 42px;
-              border-radius: calc(var(--radius) - 2px);
+              min-height: 40px;
+              border-radius: 11px;
               border: 1px solid var(--line);
               color: var(--text);
               background:
                 linear-gradient(45deg, transparent 50%, var(--muted) 50%) right 16px center / 7px 7px no-repeat,
-                linear-gradient(135deg, var(--panel), color-mix(in srgb, var(--panel-strong) 58%, var(--panel)));
+                color-mix(in srgb, var(--panel-strong) 55%, transparent);
               padding: 0 36px 0 12px;
-              font-size: 14px;
-              font-weight: 760;
+              font-size: 13.5px;
+              font-weight: 700;
+              transition: border-color 0.16s, box-shadow 0.16s;
             }
             select:focus,
             input:focus {
               outline: 0;
               border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
+              box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 15%, transparent);
             }
             .select-with-logo {
               display: grid;
-              grid-template-columns: 22px minmax(0, 1fr);
+              grid-template-columns: 24px minmax(0, 1fr);
               align-items: center;
               gap: 10px;
               min-width: 0;
             }
             .select-logo {
-              width: 20px;
-              height: 20px;
+              width: 22px;
+              height: 22px;
               border-radius: 6px;
               object-fit: contain;
               background: color-mix(in srgb, var(--panel-strong) 72%, white);
               box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
-            }
-            .select-with-logo select {
-              padding-left: 0;
             }
             .metric-grid {
               display: grid;
@@ -7444,79 +7555,118 @@ private enum SettingsPage {
               gap: 10px;
             }
             .metric {
-              min-height: 86px;
+              min-height: 84px;
               display: grid;
               align-content: center;
-              gap: 8px;
-              padding: 14px;
+              gap: 7px;
+              padding: 14px 16px;
             }
             .metric span {
               color: var(--muted);
-              font-size: 12px;
-              font-weight: 700;
+              font-size: 11px;
+              font-weight: 750;
+              letter-spacing: 0.05em;
               text-transform: uppercase;
             }
-            .metric strong {
-              font-size: 22px;
-              line-height: 1;
-            }
-            .list {
-              display: grid;
-              gap: 8px;
-            }
+            .metric strong { font-size: 23px; line-height: 1; }
+            .list { display: grid; gap: 8px; }
             .list-row {
               min-height: 58px;
-              display: grid;
-              grid-template-columns: minmax(0, 1fr) auto;
-              gap: 18px;
+              display: flex;
               align-items: center;
+              gap: 12px;
+              padding: 10px 14px;
               color: var(--text);
               text-decoration: none;
-              padding: 12px 14px;
+              transition: border-color 0.16s, transform 0.16s;
             }
             .list-row:hover {
-              border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+              border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
+              transform: translateY(-1px);
+            }
+            .site-icon {
+              width: 36px;
+              height: 36px;
+              flex: none;
+              position: relative;
+              overflow: hidden;
+              display: grid;
+              place-items: center;
+              border-radius: 11px;
+              color: #071015;
+              font-size: 14px;
+              font-weight: 800;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
+              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
+            }
+            .site-icon img {
+              position: absolute;
+              inset: 0;
+              width: 100%;
+              height: 100%;
+              object-fit: contain;
+              padding: 6px;
+              background: color-mix(in srgb, white 94%, var(--accent));
+            }
+            .file-icon {
+              color: var(--text);
+              border: 1px solid var(--line);
+              background: color-mix(in srgb, var(--panel-strong) 68%, transparent);
+              box-shadow: none;
             }
             .row-main {
+              flex: 1;
+              min-width: 0;
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              color: var(--text);
+              text-decoration: none;
+            }
+            .row-copy {
+              flex: 1;
               min-width: 0;
               display: grid;
-              gap: 4px;
+              gap: 3px;
             }
             strong, small, time {
               overflow: hidden;
               text-overflow: ellipsis;
               white-space: nowrap;
             }
-            strong { font-size: 14px; }
+            strong { font-size: 13.5px; }
             small, time { color: var(--muted); font-size: 12px; }
             .empty {
               color: var(--muted);
               border: 1px dashed var(--line);
-              border-radius: var(--radius);
+              border-radius: 14px;
               padding: 18px;
               margin: 0;
+              text-align: center;
+              font-size: 13px;
             }
             .text-button { color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 700; }
             .text-button:hover { color: var(--accent); }
-            .bookmark-row { grid-template-columns: minmax(0, 1fr) auto; }
-            .bookmark-row .row-main { color: var(--text); text-decoration: none; }
             .button {
               display: inline-flex;
               align-items: center;
               justify-content: center;
               min-height: 38px;
-              border-radius: calc(var(--radius) - 2px);
-              padding: 0 14px;
-              border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+              border-radius: 999px;
+              padding: 0 18px;
+              border: 0;
               color: #071015;
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
               text-decoration: none;
               font-size: 13px;
-              font-weight: 820;
+              font-weight: 800;
+              white-space: nowrap;
+              transition: transform 0.15s, filter 0.15s;
             }
+            .button:hover { filter: brightness(1.06); transform: scale(1.02); }
             .notice {
               border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
-              border-radius: var(--radius);
+              border-radius: 14px;
               background: color-mix(in srgb, var(--accent) 13%, var(--panel));
               color: var(--text);
               padding: 13px 15px;
@@ -7524,153 +7674,28 @@ private enum SettingsPage {
               font-weight: 700;
             }
             .status {
+              flex: none;
               border-radius: 999px;
-              padding: 5px 10px;
-              font-size: 12px;
+              padding: 5px 11px;
+              font-size: 11.5px;
               font-weight: 750;
               background: color-mix(in srgb, var(--accent) 18%, transparent);
               color: var(--text);
+              white-space: nowrap;
             }
-            .failed { background: rgba(255, 88, 88, 0.16); }
-            .inProgress { background: rgba(125, 184, 255, 0.18); }
+            .failed { background: rgba(255, 88, 88, 0.18); }
+            .inProgress { background: rgba(125, 184, 255, 0.2); }
             .row-meta {
+              flex: none;
               display: grid;
-              gap: 5px;
+              gap: 4px;
               justify-items: end;
             }
-            .duration {
-              font-size: 13px;
-            }
-            @media (max-width: 860px) {
-              .settings-shell { grid-template-columns: 1fr; }
-              .sidebar {
-                position: static;
-                height: auto;
-                border-right: 0;
-                border-bottom: 1px solid var(--line);
-                padding: 16px;
-              }
-              .nav {
-                grid-template-columns: repeat(2, minmax(0, 1fr));
-              }
-              .content {
-                max-height: none;
-                overflow: visible;
-                padding: 22px 16px 34px;
-              }
-              .panel-head, .list-row { grid-template-columns: 1fr; }
-              .panel-head { align-items: start; }
-              .overview-grid, .control-grid { grid-template-columns: 1fr; }
-              .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-              time, .status, .row-meta { justify-self: start; justify-items: start; }
-            }
-            /* UI mockup pass: browser-like settings with a quiet sidebar and row groups. */
-            :root {
-              --radius: 8px;
-              --settings-width: min(980px, \(palette.settingsWidth));
-            }
-            body { background: var(--bg); }
-            .settings-shell { grid-template-columns: 220px minmax(0, 1fr); }
-            .sidebar {
-              gap: 14px;
-              background: color-mix(in srgb, var(--panel-strong) 82%, var(--bg));
-              padding: 14px 10px;
-            }
-            .brand {
-              min-height: 52px;
-              justify-content: center;
-              padding: 4px 10px 13px;
-            }
-            .brand strong {
-              font-size: 18px;
-              letter-spacing: 0;
-            }
-            .brand span,
-            .nav-item span { display: none; }
-            .nav { gap: 4px; }
-            .nav-item {
-              min-height: 42px;
-              display: flex;
-              align-items: center;
-              border-radius: var(--radius);
-              padding: 0 11px;
-            }
-            .nav-item strong {
-              font-size: 14px;
-              font-weight: 760;
-            }
-            .content {
-              padding: 28px 32px 42px;
-              background:
-                linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 22%, transparent), transparent 220px),
-                var(--bg);
-            }
-            .panel {
-              width: min(var(--settings-width), 100%);
-              gap: 14px;
-            }
-            .panel-head {
-              border: 0;
-              border-bottom: 1px solid var(--line);
-              border-radius: 0;
-              background: transparent;
-              box-shadow: none;
-              padding: 0 0 14px;
-            }
-            h1 {
-              font-size: 26px;
-              line-height: 1.1;
-              font-weight: 820;
-            }
-            h3 {
-              font-size: 14px;
-              font-weight: 780;
-            }
-            .control-grid {
-              grid-template-columns: 1fr;
-              gap: 8px;
-            }
-            .overview-grid {
-              grid-template-columns: repeat(2, minmax(0, 1fr));
-              gap: 10px;
-            }
-            .overview-card,
-            .setting-card,
-            .metric,
-            .list-row {
-              border-radius: var(--radius);
-              box-shadow: none;
-              background: color-mix(in srgb, var(--panel) 92%, transparent);
-            }
-            .overview-card {
-              min-height: 74px;
-              padding: 12px 14px;
-            }
-            .setting-card {
-              min-height: 62px;
-              padding: 10px 14px;
-              align-content: center;
-            }
-            .setting-card label {
-              grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
-              align-items: center;
-              gap: 16px;
-            }
-            label span {
-              font-size: 13px;
-              text-transform: none;
-              color: var(--text);
-            }
-            select,
-            input {
-              min-height: 38px;
-              border-radius: var(--radius);
-              font-size: 13px;
-            }
+            .duration { font-size: 12.5px; }
             .setting-card:has(.button) {
               grid-template-columns: minmax(0, 1fr) auto;
               align-items: center;
-              gap: 16px;
+              gap: 6px 16px;
             }
             .setting-card:has(.button) h3,
             .setting-card:has(.button) p {
@@ -7680,22 +7705,20 @@ private enum SettingsPage {
               grid-column: 2;
               grid-row: 1 / span 2;
             }
-            .button {
-              min-height: 38px;
-              border-radius: var(--radius);
-              white-space: nowrap;
-            }
-            .metric-grid { gap: 8px; }
-            .metric { min-height: 72px; }
-            .list { gap: 6px; }
-            .list-row { min-height: 54px; }
-            @media (max-width: 860px) {
+            @media (max-width: 880px) {
               .settings-shell { grid-template-columns: 1fr; }
-              .sidebar { position: static; height: auto; }
+              .sidebar {
+                position: static;
+                height: auto;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+              }
               .nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-              .content { padding: 22px 16px 34px; }
-              .overview-grid,
-              .setting-card label,
+              .content { max-height: none; overflow: visible; padding: 22px 16px 36px; }
+              .panel-head { flex-direction: column; align-items: flex-start; }
+              .overview-grid { grid-template-columns: 1fr; }
+              .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+              label,
               .setting-card:has(.button) { grid-template-columns: 1fr; }
               .setting-card:has(.button) .button {
                 grid-column: 1;
@@ -7709,8 +7732,11 @@ private enum SettingsPage {
           <main class="settings-shell">
             <aside class="sidebar" aria-label="Разделы настроек">
               <div class="brand">
-                <strong>\(settingsTitle)</strong>
-                <span>\(appName)</span>
+                <span class="brand-mark">NS</span>
+                <div>
+                  <strong>\(settingsTitle)</strong>
+                  <span>\(appName)</span>
+                </div>
               </div>
               <nav class="nav">
                 \(navMarkup)
