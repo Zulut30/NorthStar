@@ -2574,7 +2574,8 @@ private final class AppPreferences {
         colorScheme = ColorSchemeMode(rawValue: defaults.integer(forKey: Keys.colorScheme)) ?? .aurora
         design = DesignMode(rawValue: defaults.integer(forKey: Keys.design)) ?? .balanced
         homeBackground = HomeBackgroundMode(rawValue: defaults.integer(forKey: Keys.homeBackground)) ?? .gradient
-        adBlockMode = AdBlockMode(rawValue: defaults.integer(forKey: Keys.adBlockMode)) ?? .compatible
+        let savedAdBlockMode = defaults.object(forKey: Keys.adBlockMode) as? Int
+        adBlockMode = savedAdBlockMode.flatMap(AdBlockMode.init(rawValue:)) ?? .strict
         defaultCurrencySource = Self.currencyCode(for: Keys.defaultCurrencySource, defaults: defaults, fallback: .pln)
         defaultCurrencyTarget = Self.currencyCode(for: Keys.defaultCurrencyTarget, defaults: defaults, fallback: .usd)
         currencyAPIKey = defaults.string(forKey: Keys.currencyAPIKey) ?? ""
@@ -4117,11 +4118,12 @@ private enum DefaultAppManager {
 
 private enum AdBlocker {
     private static func contentRuleIdentifier(for mode: AdBlockMode) -> String {
-        "NorthStarAdBlocker.\(mode.identifier).v2"
+        "NorthStarAdBlocker.\(mode.identifier).v4"
     }
 
     private static let blockedHostSuffixes = [
         "2mdn.net",
+        "adnami.io",
         "adform.net",
         "adnxs.com",
         "adsafeprotected.com",
@@ -4132,6 +4134,7 @@ private enum AdBlocker {
         "amazon-adsystem.com",
         "appnexus.com",
         "bidswitch.net",
+        "buysellads.com",
         "casalemedia.com",
         "consensu.org",
         "criteo.com",
@@ -4142,16 +4145,24 @@ private enum AdBlocker {
         "googletagservices.com",
         "google-analytics.com",
         "imasdk.googleapis.com",
+        "lushihdt.com",
+        "media.net",
+        "mgid.com",
         "moatads.com",
         "nitropay.com",
         "openx.net",
         "outbrain.com",
+        "playwire.com",
         "pubmatic.com",
         "quantserve.com",
         "rubiconproject.com",
         "scorecardresearch.com",
+        "servedby-buysellads.com",
         "smartadserver.com",
+        "snigelweb.com",
         "taboola.com",
+        "venatus.com",
+        "venatusmedia.com",
         "yieldmo.com"
     ]
 
@@ -4159,13 +4170,20 @@ private enum AdBlocker {
         "/adserver/",
         "/ads/",
         "/advert/",
+        "/banner/",
+        "/banner-",
         "/banners/",
         "/gampad/",
         "/pagead/",
         "adservice.",
+        "adunit",
         "adsystem",
+        "adsby",
         "googleads",
+        "lushihdt",
         "prebid",
+        "prosper",
+        "venatus",
         "vast?"
     ]
 
@@ -4179,12 +4197,21 @@ private enum AdBlocker {
 
     private static let compatibleBlockedURLFragments = [
         "/adserver/",
+        "/ads/",
+        "/advert/",
+        "/banner/",
+        "/banners/",
         "/gampad/",
         "/pagead/",
         "adservice.",
+        "adunit",
         "adsystem",
+        "adsby",
         "googleads",
+        "lushihdt",
         "prebid",
+        "prosper",
+        "venatus",
         "vast?"
     ]
 
@@ -4262,6 +4289,7 @@ private enum AdBlocker {
     private static let compatibleContentRules = """
     [
       { "trigger": { "url-filter": ".*2mdn\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adnami\\\\.io.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*adform\\\\.net.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*adnxs\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*adsafeprotected\\\\.com.*" }, "action": { "type": "block" } },
@@ -4271,28 +4299,37 @@ private enum AdBlocker {
       { "trigger": { "url-filter": ".*amazon-adsystem\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*appnexus\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*bidswitch\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*buysellads\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*casalemedia\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*criteo\\\\.(com|net).*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*doubleclick\\\\.net.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*googlesyndication\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*googletagservices\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*imasdk\\\\.googleapis\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*lushihdt\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*media\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*mgid\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*moatads\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*nitropay\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*openx\\\\.net.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*outbrain\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*playwire\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*pubmatic\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*rubiconproject\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*servedby-buysellads\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*smartadserver\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*snigelweb\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*taboola\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*venatus(media)?\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*yieldmo\\\\.com.*" }, "action": { "type": "block" } },
-      { "trigger": { "url-filter": ".*(/adserver/|/gampad/|/pagead/|googleads|prebid|vast\\\\?).*" }, "action": { "type": "block" } }
+      { "trigger": { "url-filter": ".*(/adserver/|/ads/|/advert/|/banner/|/banners/|/gampad/|/pagead/|adunit|adsby|googleads|lushihdt|prebid|prosper|venatus|vast\\\\?).*" }, "action": { "type": "block" } }
     ]
     """
 
     private static let strictContentRules = """
     [
       { "trigger": { "url-filter": ".*2mdn\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adnami\\\\.io.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*adform\\\\.net.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*adnxs\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*adsafeprotected\\\\.com.*" }, "action": { "type": "block" } },
@@ -4302,6 +4339,7 @@ private enum AdBlocker {
       { "trigger": { "url-filter": ".*amazon-adsystem\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*appnexus\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*bidswitch\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*buysellads\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*casalemedia\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*consensu\\\\.org.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*criteo\\\\.(com|net).*" }, "action": { "type": "block" } },
@@ -4310,183 +4348,262 @@ private enum AdBlocker {
       { "trigger": { "url-filter": ".*googletag(manager|services)\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*google-analytics\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*imasdk\\\\.googleapis\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*lushihdt\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*media\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*mgid\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*moatads\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*nitropay\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*openx\\\\.net.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*outbrain\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*playwire\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*pubmatic\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*quantserve\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*rubiconproject\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*scorecardresearch\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*servedby-buysellads\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*smartadserver\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*snigelweb\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*taboola\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*venatus(media)?\\\\.com.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*yieldmo\\\\.com.*" }, "action": { "type": "block" } },
-      { "trigger": { "url-filter": ".*(/adserver/|/ads/|/advert/|/banners/|/gampad/|/pagead/|googleads|prebid|vast\\\\?).*" }, "action": { "type": "block" } }
+      { "trigger": { "url-filter": ".*(/adserver/|/ads/|/advert/|/banner/|/banners/|/gampad/|/pagead/|adunit|adsby|googleads|lushihdt|prebid|prosper|venatus|vast\\\\?).*" }, "action": { "type": "block" } }
     ]
     """
 
-    private static let compatibleScript = """
-    (() => {
-      const selectors = [
-        ".adsbygoogle",
-        ".ad-banner",
-        ".ad-container",
-        ".ad-slot",
-        ".ad_unit",
-        ".adbox",
-        ".adframe",
-        ".adslot",
-        ".advert",
-        ".advertisement",
-        ".banner-ad",
-        ".google-auto-placed",
-        ".nitro-ad",
-        ".nitro-ad-container",
-        "[aria-label='Advertisement']",
-        "[data-ad]",
-        "[data-ad-client]",
-        "[data-ad-slot]",
-        "[data-google-query-id]",
-        "iframe[src*='2mdn.net']",
-        "iframe[src*='adservice.google']",
-        "iframe[src*='doubleclick.net']",
-        "iframe[src*='googlesyndication.com']",
-        "iframe[src*='imasdk.googleapis.com']",
-        "iframe[src*='nitropay.com']",
-        "ins.adsbygoogle"
-      ];
-      const selectorText = selectors.join(",");
-      const ensureStyle = () => {
-        if (document.getElementById("northstar-adblock-style")) return;
-        const style = document.createElement("style");
-        style.id = "northstar-adblock-style";
-        style.textContent = selectorText + "{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;max-height:0!important;max-width:0!important;overflow:hidden!important;}";
-        (document.head || document.documentElement).appendChild(style);
-      };
-      const start = () => {
-        ensureStyle();
-        const observer = new MutationObserver(() => ensureStyle());
-        observer.observe(document.documentElement, { childList: true, subtree: true });
-      };
-      if (document.documentElement) {
-        start();
-      } else {
-        document.addEventListener("DOMContentLoaded", start, { once: true });
-      }
-    })();
-    """
+    private static let compatibleScript = adCleanupScript(removesConsent: false)
+    private static let strictScript = adCleanupScript(removesConsent: true)
 
-    private static let strictScript = """
-    (() => {
-      const selectors = [
-        ".adsbygoogle",
-        ".ad-banner",
-        ".ad-container",
-        ".ad-slot",
-        ".ad_unit",
-        ".adbox",
-        ".adframe",
-        ".adslot",
-        ".advert",
-        ".advertisement",
-        ".banner-ad",
+    private static func adCleanupScript(removesConsent: Bool) -> String {
+        let consentSelectors = removesConsent ? """
         ".fc-consent-root",
-        ".google-auto-placed",
-        ".nitro-ad",
-        ".nitro-ad-container",
         ".qc-cmp2-container",
         ".sp_message_container",
         "#onetrust-consent-sdk",
-        "[aria-label='Advertisement']",
-        "[class*=' ad-']",
-        "[class*=' ads']",
-        "[class*='advert']",
-        "[class*='nitro']",
-        "[data-ad]",
-        "[data-ad-client]",
-        "[data-ad-slot]",
-        "[data-google-query-id]",
-        "[id*='ad-']",
-        "[id*='ads']",
-        "[id*='advert']",
-        "[id*='nitro']",
-        "iframe[src*='2mdn.net']",
-        "iframe[src*='adservice.google']",
-        "iframe[src*='doubleclick.net']",
-        "iframe[src*='googlesyndication.com']",
-        "iframe[src*='imasdk.googleapis.com']",
-        "iframe[src*='nitropay.com']",
-        "ins.adsbygoogle"
-      ];
-      const blockedFragments = [
-        "2mdn.net",
-        "adform.net",
-        "adnxs.com",
-        "adsafeprotected.com",
-        "adsrvr.org",
-        "adservice.google.",
-        "advertising.com",
-        "amazon-adsystem.com",
-        "appnexus.com",
-        "bidswitch.net",
-        "casalemedia.com",
-        "consensu.org",
-        "criteo.com",
-        "criteo.net",
-        "doubleclick.net",
-        "googlesyndication.com",
-        "googletagmanager.com",
-        "googletagservices.com",
-        "google-analytics.com",
-        "googleads",
-        "imasdk.googleapis.com",
-        "moatads.com",
-        "nitropay.com",
-        "openx.net",
-        "outbrain.com",
-        "pagead/",
-        "prebid",
-        "pubmatic.com",
-        "rubiconproject.com",
-        "scorecardresearch.com",
-        "smartadserver.com",
-        "taboola.com",
-        "yieldmo.com"
-      ];
-      const shouldBlock = value => {
-        const text = String(value || "").toLowerCase();
-        return blockedFragments.some(fragment => text.includes(fragment));
-      };
-      const selectorText = selectors.join(",");
-      const ensureStyle = () => {
-        if (document.getElementById("northstar-adblock-style")) return;
-        const style = document.createElement("style");
-        style.id = "northstar-adblock-style";
-        style.textContent = selectorText + "{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;max-height:0!important;max-width:0!important;overflow:hidden!important;}";
-        (document.head || document.documentElement).appendChild(style);
-      };
-      const removeMatches = () => {
-        ensureStyle();
-        try {
-          document.querySelectorAll(selectorText).forEach(element => element.remove());
-        } catch (_) {}
-        document.querySelectorAll("iframe,img,script,link,source,video,ins").forEach(element => {
-          const url = element.currentSrc || element.src || element.href || "";
-          if (shouldBlock(url)) element.remove();
-        });
-      };
-      const start = () => {
-        removeMatches();
-        const observer = new MutationObserver(() => removeMatches());
-        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "href", "class", "id"] });
-      };
-      if (document.documentElement) {
-        start();
-      } else {
-        document.addEventListener("DOMContentLoaded", start, { once: true });
-      }
-    })();
-    """
+        "[id*='consent']",
+        "[class*='consent']",
+        "[class*='cmp-']",
+        "[class*='cookie-banner']",
+        """ : ""
+
+        return """
+        (() => {
+          const selectors = [
+            ".adsbygoogle",
+            ".ad-banner",
+            ".ad-container",
+            ".ad-slot",
+            ".ad_unit",
+            ".adbox",
+            ".adframe",
+            ".adslot",
+            ".advert",
+            ".advertisement",
+            ".ads-padding",
+            ".banner-ad",
+            ".google-auto-placed",
+            ".nitro-ad",
+            ".nitro-ad-container",
+            "[aria-label='Advertisement']",
+            "[class*=' ad-']",
+            "[class*=' ad_']",
+            "[class*=' ads']",
+            "[class*='ad-container']",
+            "[class*='ad-wrapper']",
+            "[class*='ad_slot']",
+            "[class*='ads-padding']",
+            "[class*='advert']",
+            "[class*='banner-ad']",
+            "[class*='nitro']",
+            "[data-ad]",
+            "[data-ad-client]",
+            "[data-ad-slot]",
+            "[data-ad-unit]",
+            "[data-adunit]",
+            "[data-google-query-id]",
+            "[id*='ad-']",
+            "[id*='ad_']",
+            "[id*='ads']",
+            "[id*='advert']",
+            "[id*='banner-ad']",
+            "[id*='nitro']",
+            "a[href*='lushihdt.com']",
+            "a[href*='venatus']",
+            "iframe[src*='2mdn.net']",
+            "iframe[src*='adservice.google']",
+            "iframe[src*='doubleclick.net']",
+            "iframe[src*='googlesyndication.com']",
+            "iframe[src*='imasdk.googleapis.com']",
+            "iframe[src*='nitropay.com']",
+            "iframe[src*='venatus']",
+            "img[src*='2mdn.net']",
+            "img[src*='doubleclick.net']",
+            "img[src*='googlesyndication.com']",
+            "img[src*='venatus']",
+            "ins.adsbygoogle",
+        \(consentSelectors)
+            "script[src*='venatus']"
+          ];
+          const blockedFragments = [
+            "2mdn.net",
+            "adform.net",
+            "adnami.io",
+            "adnxs.com",
+            "adsafeprotected.com",
+            "adsrvr.org",
+            "adservice.google.",
+            "advertising.com",
+            "amazon-adsystem.com",
+            "appnexus.com",
+            "bidswitch.net",
+            "buysellads.com",
+            "casalemedia.com",
+            "criteo.com",
+            "criteo.net",
+            "doubleclick.net",
+            "googlesyndication.com",
+            "googletagmanager.com",
+            "googletagservices.com",
+            "google-analytics.com",
+            "googleads",
+            "imasdk.googleapis.com",
+            "lushihdt.com",
+            "media.net",
+            "mgid.com",
+            "moatads.com",
+            "nitropay.com",
+            "openx.net",
+            "outbrain.com",
+            "pagead/",
+            "playwire.com",
+            "prebid",
+            "prosper",
+            "pubmatic.com",
+            "rubiconproject.com",
+            "scorecardresearch.com",
+            "servedby-buysellads.com",
+            "smartadserver.com",
+            "snigelweb.com",
+            "taboola.com",
+            "venatus",
+            "wargaming",
+            "world of tanks",
+            "worldoftanks",
+            "yieldmo.com"
+          ];
+          const promoTextFragments = [
+            "play now for free",
+            "advertisement",
+            "reklama"
+          ];
+          const selectorText = selectors.join(",");
+          const largeTags = new Set(["BODY", "HTML", "MAIN", "NAV", "HEADER"]);
+          const removableTags = new Set(["IFRAME", "IMG", "SCRIPT", "LINK", "SOURCE", "VIDEO", "INS"]);
+          const textValue = element => [
+            element.id,
+            element.className,
+            element.getAttribute && element.getAttribute("aria-label"),
+            element.getAttribute && element.getAttribute("alt"),
+            element.getAttribute && element.getAttribute("href"),
+            element.getAttribute && element.getAttribute("src"),
+            element.getAttribute && element.getAttribute("srcset"),
+            element.getAttribute && element.getAttribute("style"),
+            element.textContent
+          ].join(" ").toLowerCase();
+          const resourceValue = element => [
+            element.id,
+            element.className,
+            element.currentSrc,
+            element.src,
+            element.href,
+            element.getAttribute && element.getAttribute("href"),
+            element.getAttribute && element.getAttribute("src"),
+            element.getAttribute && element.getAttribute("srcset"),
+            element.getAttribute && element.getAttribute("style")
+          ].join(" ").toLowerCase();
+          const hasAdSignal = element => {
+            const value = textValue(element);
+            return blockedFragments.some(fragment => value.includes(fragment)) || promoTextFragments.some(fragment => value.includes(fragment));
+          };
+          const hasResourceAdSignal = element => {
+            const value = resourceValue(element);
+            return blockedFragments.some(fragment => value.includes(fragment));
+          };
+          const isPageContainer = element => {
+            if (!element || largeTags.has(element.tagName)) return true;
+            const rect = element.getBoundingClientRect();
+            return rect.width > window.innerWidth * 0.9 && rect.height > window.innerHeight * 0.7;
+          };
+          const targetFor = element => {
+            let node = element;
+            for (let depth = 0; node && depth < 5; depth += 1, node = node.parentElement) {
+              if (!isPageContainer(node) && hasAdSignal(node)) return node;
+            }
+            return isPageContainer(element) ? null : element;
+          };
+          const hide = element => {
+            element.style.setProperty("display", "none", "important");
+            element.style.setProperty("visibility", "hidden", "important");
+            element.style.setProperty("opacity", "0", "important");
+            element.style.setProperty("pointer-events", "none", "important");
+            element.style.setProperty("max-height", "0", "important");
+            element.style.setProperty("overflow", "hidden", "important");
+          };
+          const removeElement = element => {
+            const target = targetFor(element);
+            if (target && (removableTags.has(target.tagName) || removableTags.has(element.tagName))) {
+              target.remove();
+            } else if (target) {
+              hide(target);
+            } else {
+              hide(element);
+            }
+          };
+          const ensureStyle = () => {
+            if (document.getElementById("northstar-adblock-style")) return;
+            const style = document.createElement("style");
+            style.id = "northstar-adblock-style";
+            style.textContent = selectorText + "{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;max-height:0!important;max-width:0!important;overflow:hidden!important;}";
+            (document.head || document.documentElement).appendChild(style);
+          };
+          const removeMatches = () => {
+            ensureStyle();
+            try {
+              document.querySelectorAll(selectorText).forEach(removeElement);
+            } catch (_) {}
+            document.querySelectorAll("iframe,img,script,link,source,video,ins").forEach(element => {
+              if (hasResourceAdSignal(element)) removeElement(element);
+            });
+            document.querySelectorAll("a,picture,div,section,aside").forEach(element => {
+              if (hasAdSignal(element)) removeElement(element);
+            });
+          };
+          const schedule = (() => {
+            let pending = false;
+            return () => {
+              if (pending) return;
+              pending = true;
+              requestAnimationFrame(() => {
+                pending = false;
+                removeMatches();
+              });
+            };
+          })();
+          const start = () => {
+            removeMatches();
+            const observer = new MutationObserver(schedule);
+            observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "href", "class", "id", "style"] });
+            setTimeout(removeMatches, 500);
+            setTimeout(removeMatches, 1500);
+            setTimeout(removeMatches, 3000);
+          };
+          if (document.documentElement) {
+            start();
+          } else {
+            document.addEventListener("DOMContentLoaded", start, { once: true });
+          }
+        })();
+        """
+    }
 }
 
 private enum NetworkPolicy {
