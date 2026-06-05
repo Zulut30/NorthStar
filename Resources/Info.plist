@@ -10,6 +10,8 @@
     <string>NorthStar</string>
     <key>CFBundleIdentifier</key>
     <string>com.local.NorthStar</string>
+    <key>CFBundleIconFile</key>
+    <string>NorthStar.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>

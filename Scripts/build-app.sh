@@ -16,6 +16,7 @@ mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
 cp "$BIN_DIR/$APP_NAME" "$APP_DIR/Contents/MacOS/$APP_NAME"
 cp "$ROOT_DIR/Resources/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "$ROOT_DIR/Resources/NorthStar.icns" "$APP_DIR/Contents/Resources/NorthStar.icns"
 chmod +x "$APP_DIR/Contents/MacOS/$APP_NAME"
 
 if command -v codesign >/dev/null 2>&1; then

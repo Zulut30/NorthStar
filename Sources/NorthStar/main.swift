@@ -107,9 +107,17 @@ private final class BrowserViewController: NSViewController {
     private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Вперёд")
     private let homeButton = IconButton(symbolName: "house", tooltip: "Домой")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
-    private let parserButton = IconButton(symbolName: "doc.text.magnifyingglass", tooltip: "Парсер страницы")
-    private let settingsButton = IconButton(symbolName: "gearshape", tooltip: settingsTitle)
+    private let hardReloadButton = ToolbarActionButton(symbolName: "arrow.clockwise.circle", title: "Без кэша", tooltip: "Жёсткое обновление без кэша", width: 94)
+    private let privateButton = ToolbarActionButton(symbolName: "eye.slash", title: "Приватно", tooltip: "Новая приватная вкладка", width: 92)
+    private let screenshotButton = ToolbarActionButton(symbolName: "camera.viewfinder", title: "Снимок", tooltip: "Скопировать скриншот вкладки", width: 84)
+    private let currencyButton = ToolbarActionButton(symbolName: "dollarsign.circle", title: "Валюта", tooltip: "Конвертер валют", width: 82)
+    private let parserButton = ToolbarActionButton(symbolName: "doc.text.magnifyingglass", title: "Парсер", tooltip: "Разобрать текущую страницу", width: 80)
+    private let settingsButton = ToolbarActionButton(symbolName: "gearshape", title: "Настройки", tooltip: settingsTitle, width: 104)
     private let addressField = NSTextField()
+    private let addressSuggestionPopover = NSPopover()
+    private let addressSuggestionViewController = AddressSuggestionViewController()
+    private let currencyPopover = NSPopover()
+    private let currencyViewController = CurrencyConverterViewController()
     private let searchEnginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let networkPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let progressIndicator = NSProgressIndicator()
@@ -119,12 +127,39 @@ private final class BrowserViewController: NSViewController {
     private var tabStackCrossAxisConstraint: NSLayoutConstraint?
     private var toolbarHeightConstraint: NSLayoutConstraint?
     private var activeDownloads: [ObjectIdentifier: UUID] = [:]
+    private var privateDownloads: Set<ObjectIdentifier> = []
+    private var activeAddressSuggestions: [AddressSuggestion] = []
+    private var selectedAddressSuggestionIndex: Int?
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
 
     private var activeTab: BrowserTab? {
         tabs.first { $0.id == activeTabID }
     }
+
+    private static let currencyScanScript = #"""
+    (() => {
+      const text = String(document.body?.innerText || "")
+        .replace(/\u00a0/g, " ")
+        .slice(0, 180000);
+      const patterns = [
+        /(?:PLN|zł|zl|EUR|€|USD|US\$|\$|GBP|£|UAH|грн|₴|RUB|руб|₽|CHF|CZK|Kč|SEK|NOK|DKK|CAD|AUD|JPY|¥)\s*[0-9][0-9\s.,–-]*/gi,
+        /[0-9][0-9\s.,–-]*\s*(?:PLN|zł|zl|EUR|€|USD|US\$|\$|GBP|£|UAH|грн|₴|RUB|руб|₽|CHF|CZK|Kč|SEK|NOK|DKK|CAD|AUD|JPY|¥)/gi
+      ];
+      const seen = new Set();
+      const results = [];
+      for (const pattern of patterns) {
+        for (const match of text.matchAll(pattern)) {
+          const value = String(match[0] || "").replace(/\s+/g, " ").trim();
+          if (value.length < 2 || seen.has(value)) continue;
+          seen.add(value);
+          results.push(value);
+          if (results.length >= 30) return JSON.stringify(results);
+        }
+      }
+      return JSON.stringify(results);
+    })()
+    """#
 
     deinit {
         NotificationCenter.default.removeObserver(self)
@@ -148,6 +183,79 @@ private final class BrowserViewController: NSViewController {
 
     @objc func newTabCommand(_ sender: Any?) {
         addTab(profile: activeTab?.profile ?? .system, url: nil, activate: true)
+    }
+
+    @objc func newPrivateTabCommand(_ sender: Any?) {
+        addTab(profile: .privateBrowsing, url: nil, activate: true)
+    }
+
+    @objc func screenshotTabCommand(_ sender: Any?) {
+        guard let tab = activeTab, !tab.webView.bounds.isEmpty else {
+            NSSound.beep()
+            return
+        }
+
+        let configuration = WKSnapshotConfiguration()
+        configuration.rect = tab.webView.bounds
+
+        screenshotButton.isEnabled = false
+        tab.webView.takeSnapshot(with: configuration) { [weak self] image, error in
+            Task { @MainActor in
+                guard let self else { return }
+                self.screenshotButton.isEnabled = true
+
+                guard let image else {
+                    self.showScreenshotError(error)
+                    return
+                }
+
+                let pasteboard = NSPasteboard.general
+                pasteboard.clearContents()
+
+                if !pasteboard.writeObjects([image]) {
+                    self.showScreenshotError(nil)
+                }
+            }
+        }
+    }
+
+    @objc func showCurrencyConverterCommand(_ sender: Any?) {
+        showCurrencyConverter(prefilled: nil, autoConvert: false, scanPageOnOpen: true)
+    }
+
+    @objc func convertSelectionCurrencyCommand(_ sender: Any?) {
+        guard let menuItem = sender as? NSMenuItem,
+              let webView = menuItem.representedObject as? WKWebView else {
+            NSSound.beep()
+            return
+        }
+
+        webView.evaluateJavaScript("window.getSelection().toString()") { [weak self] result, _ in
+            Task { @MainActor in
+                guard let self else { return }
+                let selectedText = (result as? String) ?? ""
+                guard let amount = CurrencyAmountParser.parse(
+                    selectedText,
+                    defaultCurrency: self.preferences.defaultCurrencySource
+                ) else {
+                    self.showCurrencyError(message: "Не удалось распознать цену в выделенном тексте.")
+                    return
+                }
+
+                self.showCurrencyConverter(prefilled: amount, autoConvert: true)
+            }
+        }
+    }
+
+    @objc func scanPageCurrencyCommand(_ sender: Any?) {
+        if let menuItem = sender as? NSMenuItem,
+           let webView = menuItem.representedObject as? WKWebView {
+            showCurrencyConverter(prefilled: nil, autoConvert: false, scanPageOnOpen: false)
+            scanCurrencyAmount(from: webView, autoConvert: true)
+            return
+        }
+
+        showCurrencyConverter(prefilled: nil, autoConvert: false, scanPageOnOpen: true)
     }
 
     @objc func closeTabCommand(_ sender: Any?) {
@@ -191,6 +299,21 @@ private final class BrowserViewController: NSViewController {
         }
     }
 
+    @objc func hardReloadCommand(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+
+        if tab.isShowingHome {
+            showHome(in: tab)
+        } else if tab.isShowingSettings {
+            showSettings(in: tab)
+        } else if tab.isShowingParser, let snapshot = tab.parserSnapshot {
+            tab.loadParserPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else {
+            tab.webView.stopLoading()
+            tab.webView.reloadFromOrigin()
+        }
+    }
+
     @objc func focusLocation(_ sender: Any?) {
         view.window?.makeFirstResponder(addressField)
         addressField.currentEditor()?.selectAll(nil)
@@ -216,17 +339,270 @@ private final class BrowserViewController: NSViewController {
         guard let tab = activeTab else { return }
 
         let trimmed = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        hideAddressSuggestions()
         if trimmed.isEmpty {
             showHome(in: tab)
             return
         }
 
-        guard let url = URLParser.url(from: trimmed, searchEngine: preferences.searchEngine) else {
+        guard let url = URLParser.url(
+            from: trimmed,
+            searchEngine: preferences.searchEngine,
+            region: preferences.searchRegion,
+            language: preferences.searchLanguage
+        ) else {
             NSSound.beep()
             return
         }
 
         load(url, in: tab)
+    }
+
+    private func updateAddressSuggestions() {
+        guard isEditingAddress else {
+            hideAddressSuggestions()
+            return
+        }
+
+        let trimmed = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            hideAddressSuggestions()
+            return
+        }
+
+        activeAddressSuggestions = addressSuggestions(for: trimmed)
+        selectedAddressSuggestionIndex = activeAddressSuggestions.isEmpty ? nil : 0
+
+        guard !activeAddressSuggestions.isEmpty else {
+            hideAddressSuggestions()
+            return
+        }
+
+        renderAddressSuggestions()
+        showAddressSuggestions()
+    }
+
+    private func addressSuggestions(for query: String) -> [AddressSuggestion] {
+        let normalizedQuery = query.lowercased()
+        var suggestions: [AddressSuggestion] = []
+        var seen = Set<String>()
+
+        func append(_ suggestion: AddressSuggestion) {
+            guard seen.insert(suggestion.identity).inserted else { return }
+            suggestions.append(suggestion)
+        }
+
+        if let directURL = URLParser.directURL(from: query) {
+            append(
+                AddressSuggestion(
+                    title: "Открыть сайт",
+                    detail: AddressSuggestion.displayText(for: directURL).truncatedForSuggestion(maxLength: 96),
+                    input: directURL.absoluteString,
+                    url: directURL,
+                    symbolName: "globe"
+                )
+            )
+        }
+
+        if let searchURL = preferences.searchEngine.searchURL(
+            for: query,
+            region: preferences.searchRegion,
+            language: preferences.searchLanguage
+        ) {
+            append(
+                AddressSuggestion(
+                    title: "Искать «\(query)»",
+                    detail: "\(preferences.searchEngine.title) · \(preferences.searchRegion.title) · \(preferences.searchLanguage.title)",
+                    input: query,
+                    url: searchURL,
+                    symbolName: "magnifyingglass",
+                    identity: "search:\(preferences.searchEngine.identifier):\(query)"
+                )
+            )
+        }
+
+        guard query.count >= 2 else {
+            return Array(suggestions.prefix(5))
+        }
+
+        for entry in BrowserHistoryStore.shared.entries {
+            let title = entry.title.lowercased()
+            let url = entry.url.lowercased()
+            guard title.contains(normalizedQuery) || url.contains(normalizedQuery),
+                  let entryURL = URL(string: entry.url) else {
+                continue
+            }
+
+            append(
+                AddressSuggestion(
+                    title: entry.title.truncatedForSuggestion(maxLength: 76),
+                    detail: entry.url.truncatedForSuggestion(maxLength: 110),
+                    input: entry.url,
+                    url: entryURL,
+                    symbolName: "clock"
+                )
+            )
+
+            if suggestions.count >= 5 {
+                break
+            }
+        }
+
+        return Array(suggestions.prefix(5))
+    }
+
+    private func renderAddressSuggestions() {
+        addressSuggestionViewController.update(
+            suggestions: activeAddressSuggestions,
+            selectedIndex: selectedAddressSuggestionIndex,
+            width: addressField.bounds.width
+        )
+        addressSuggestionPopover.contentSize = addressSuggestionViewController.preferredContentSize
+    }
+
+    private func showAddressSuggestions() {
+        guard !addressSuggestionPopover.isShown else { return }
+
+        addressSuggestionPopover.show(
+            relativeTo: addressField.bounds,
+            of: addressField,
+            preferredEdge: .minY
+        )
+    }
+
+    private func hideAddressSuggestions() {
+        activeAddressSuggestions = []
+        selectedAddressSuggestionIndex = nil
+        addressSuggestionPopover.close()
+    }
+
+    private func moveAddressSuggestionSelection(by offset: Int) {
+        guard !activeAddressSuggestions.isEmpty else { return }
+
+        if let selectedAddressSuggestionIndex {
+            let nextIndex = (selectedAddressSuggestionIndex + offset + activeAddressSuggestions.count) % activeAddressSuggestions.count
+            self.selectedAddressSuggestionIndex = nextIndex
+        } else {
+            selectedAddressSuggestionIndex = offset >= 0 ? 0 : activeAddressSuggestions.count - 1
+        }
+
+        renderAddressSuggestions()
+        showAddressSuggestions()
+    }
+
+    private func applySelectedAddressSuggestion() -> Bool {
+        guard let selectedAddressSuggestionIndex,
+              activeAddressSuggestions.indices.contains(selectedAddressSuggestionIndex) else {
+            return false
+        }
+
+        applyAddressSuggestion(activeAddressSuggestions[selectedAddressSuggestionIndex])
+        return true
+    }
+
+    private func applyAddressSuggestion(_ suggestion: AddressSuggestion) {
+        hideAddressSuggestions()
+        addressField.stringValue = suggestion.input
+
+        guard let tab = activeTab else { return }
+
+        if let url = suggestion.url {
+            load(url, in: tab)
+            return
+        }
+
+        guard let url = URLParser.url(
+            from: suggestion.input,
+            searchEngine: preferences.searchEngine,
+            region: preferences.searchRegion,
+            language: preferences.searchLanguage
+        ) else {
+            NSSound.beep()
+            return
+        }
+
+        load(url, in: tab)
+    }
+
+    private func showCurrencyConverter(prefilled amount: CurrencyAmount?, autoConvert: Bool, scanPageOnOpen: Bool = false) {
+        let source = amount?.currency ?? preferences.defaultCurrencySource
+        let canScanPage = activeTab.map { !$0.isShowingHome && !$0.isShowingSettings && !$0.isShowingParser } ?? false
+        currencyViewController.configure(
+            amount: amount?.amount,
+            source: source,
+            target: preferences.defaultCurrencyTarget,
+            apiKeyPresent: !preferences.currencyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            canScanPage: canScanPage
+        )
+
+        if !currencyPopover.isShown {
+            currencyPopover.show(relativeTo: currencyButton.bounds, of: currencyButton, preferredEdge: .minY)
+        }
+
+        if scanPageOnOpen, amount == nil, canScanPage, let webView = activeTab?.webView {
+            scanCurrencyAmount(from: webView, autoConvert: true)
+            return
+        }
+
+        if autoConvert {
+            let request = CurrencyConversionRequest(
+                amount: amount?.amount ?? 0,
+                source: source,
+                target: preferences.defaultCurrencyTarget
+            )
+            runCurrencyConversion(request)
+        }
+    }
+
+    private func runCurrencyConversion(_ request: CurrencyConversionRequest) {
+        let apiKey = preferences.currencyAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            currencyViewController.showError("Ключ ExchangeRate-API не настроен локально.")
+            return
+        }
+
+        guard request.amount > 0 else {
+            currencyViewController.showError("Введите сумму больше нуля.")
+            return
+        }
+
+        currencyViewController.showLoading()
+        Task { @MainActor in
+            do {
+                let result = try await CurrencyConverterService.convert(
+                    amount: request.amount,
+                    source: request.source,
+                    target: request.target,
+                    apiKey: apiKey
+                )
+                currencyViewController.showResult(result)
+            } catch {
+                currencyViewController.showError(error.localizedDescription)
+            }
+        }
+    }
+
+    private func scanCurrencyAmount(from webView: WKWebView, autoConvert: Bool) {
+        currencyViewController.showScanning()
+        Task { @MainActor in
+            do {
+                let amount = try await Self.detectCurrencyAmount(in: webView, defaultCurrency: preferences.defaultCurrencySource)
+                showCurrencyConverter(prefilled: amount, autoConvert: autoConvert)
+            } catch {
+                currencyViewController.showError(error.localizedDescription)
+            }
+        }
+    }
+
+    private static func detectCurrencyAmount(in webView: WKWebView, defaultCurrency: CurrencyCode) async throws -> CurrencyAmount {
+        guard let json = try await webView.evaluateJavaScript(currencyScanScript) as? String,
+              let data = json.data(using: .utf8),
+              let fragments = try? JSONDecoder().decode([String].self, from: data),
+              let amount = CurrencyAmountParser.bestCandidate(in: fragments, defaultCurrency: defaultCurrency) else {
+            throw CurrencyScanError.notFound
+        }
+
+        return amount
     }
 
     @objc private func addTabFromButton(_ sender: Any?) {
@@ -317,6 +693,24 @@ private final class BrowserViewController: NSViewController {
         addressField.placeholderString = "Поиск или адрес сайта"
         addressField.target = self
         addressField.action = #selector(loadTypedAddress(_:))
+        addressField.delegate = self
+
+        addressSuggestionPopover.behavior = .semitransient
+        addressSuggestionPopover.animates = false
+        addressSuggestionPopover.contentViewController = addressSuggestionViewController
+        addressSuggestionViewController.onSelect = { [weak self] suggestion in
+            self?.applyAddressSuggestion(suggestion)
+        }
+
+        currencyPopover.behavior = .semitransient
+        currencyPopover.animates = true
+        currencyPopover.contentViewController = currencyViewController
+        currencyViewController.onConvert = { [weak self] request in
+            self?.runCurrencyConversion(request)
+        }
+        currencyViewController.onScanPage = { [weak self] in
+            self?.scanPageCurrencyCommand(nil)
+        }
 
         searchEnginePopup.translatesAutoresizingMaskIntoConstraints = false
         searchEnginePopup.controlSize = .regular
@@ -353,6 +747,14 @@ private final class BrowserViewController: NSViewController {
         homeButton.action = #selector(goHome(_:))
         reloadButton.target = self
         reloadButton.action = #selector(reloadCommand(_:))
+        hardReloadButton.target = self
+        hardReloadButton.action = #selector(hardReloadCommand(_:))
+        privateButton.target = self
+        privateButton.action = #selector(newPrivateTabCommand(_:))
+        screenshotButton.target = self
+        screenshotButton.action = #selector(screenshotTabCommand(_:))
+        currencyButton.target = self
+        currencyButton.action = #selector(showCurrencyConverterCommand(_:))
         parserButton.target = self
         parserButton.action = #selector(openParserCommand(_:))
         settingsButton.target = self
@@ -361,7 +763,7 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [brandTitleField, backButton, forwardButton, homeButton, addressField, searchEnginePopup, networkPopup, parserButton, reloadButton, settingsButton, progressIndicator].forEach {
+        [brandTitleField, backButton, forwardButton, homeButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -395,22 +797,26 @@ private final class BrowserViewController: NSViewController {
             settingsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
             settingsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            reloadButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
+            currencyButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
+            currencyButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            screenshotButton.trailingAnchor.constraint(equalTo: currencyButton.leadingAnchor, constant: -8),
+            screenshotButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            privateButton.trailingAnchor.constraint(equalTo: screenshotButton.leadingAnchor, constant: -8),
+            privateButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            hardReloadButton.trailingAnchor.constraint(equalTo: privateButton.leadingAnchor, constant: -8),
+            hardReloadButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            reloadButton.trailingAnchor.constraint(equalTo: hardReloadButton.leadingAnchor, constant: -8),
             reloadButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
             parserButton.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -8),
             parserButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            networkPopup.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -10),
-            networkPopup.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-            networkPopup.widthAnchor.constraint(equalToConstant: 118),
-
-            searchEnginePopup.trailingAnchor.constraint(equalTo: networkPopup.leadingAnchor, constant: -10),
-            searchEnginePopup.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-            searchEnginePopup.widthAnchor.constraint(equalToConstant: 132),
-
             addressField.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 12),
-            addressField.trailingAnchor.constraint(equalTo: searchEnginePopup.leadingAnchor, constant: -12),
+            addressField.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -12),
             addressField.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             addressField.heightAnchor.constraint(equalToConstant: 30),
 
@@ -598,6 +1004,11 @@ private final class BrowserViewController: NSViewController {
         let tab = BrowserTab(profile: profile)
         tab.webView.navigationDelegate = self
         tab.webView.uiDelegate = self
+        if let webView = tab.webView as? BrowserWebView {
+            webView.onConfigureContextMenu = { [weak self] webView, menu in
+                self?.appendCurrencyConversionItem(to: menu, webView: webView)
+            }
+        }
         tab.onStateChange = { [weak self] changedTab in
             self?.tabStateDidChange(changedTab)
         }
@@ -676,6 +1087,7 @@ private final class BrowserViewController: NSViewController {
 
     private func activateTab(id: UUID) {
         guard activeTabID != id else { return }
+        hideAddressSuggestions()
         activeTabID = id
         showActiveTab()
         renderTabs()
@@ -746,10 +1158,13 @@ private final class BrowserViewController: NSViewController {
     private func showHome(in tab: BrowserTab) {
         tab.loadHomePage(
             searchEngine: preferences.searchEngine,
+            searchRegion: preferences.searchRegion,
+            searchLanguage: preferences.searchLanguage,
             theme: preferences.theme,
             colorScheme: preferences.colorScheme,
             design: preferences.design,
-            homeBackground: preferences.homeBackground
+            homeBackground: preferences.homeBackground,
+            recentHistory: BrowserHistoryStore.shared.entries
         )
     }
 
@@ -797,7 +1212,7 @@ private final class BrowserViewController: NSViewController {
         )
     }
 
-    private func showSettings(in tab: BrowserTab) {
+    private func showSettings(in tab: BrowserTab, activeSection: SettingsSection = .overview) {
         tab.loadSettingsPage(
             preferences: preferences,
             history: BrowserHistoryStore.shared.entries,
@@ -806,7 +1221,8 @@ private final class BrowserViewController: NSViewController {
                 activeTabs: tabs.count,
                 loadingTabs: tabs.filter { $0.webView.isLoading }.count
             ),
-            theme: preferences.theme
+            theme: preferences.theme,
+            activeSection: activeSection
         )
     }
 
@@ -843,9 +1259,32 @@ private final class BrowserViewController: NSViewController {
             preferences.searchEngine = selectedEngine
         }
 
+        let selectedRegion = components.queryItems?
+            .first(where: { $0.name == "region" })?
+            .value
+            .flatMap(SearchRegion.init(identifier:))
+
+        if let selectedRegion, selectedRegion != preferences.searchRegion {
+            preferences.searchRegion = selectedRegion
+        }
+
+        let selectedLanguage = components.queryItems?
+            .first(where: { $0.name == "language" })?
+            .value
+            .flatMap(SearchLanguage.init(identifier:))
+
+        if let selectedLanguage, selectedLanguage != preferences.searchLanguage {
+            preferences.searchLanguage = selectedLanguage
+        }
+
         guard let query = components.queryItems?.first(where: { $0.name == "q" })?.value,
               !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let targetURL = URLParser.url(from: query, searchEngine: selectedEngine ?? preferences.searchEngine) else {
+              let targetURL = URLParser.url(
+                from: query,
+                searchEngine: selectedEngine ?? preferences.searchEngine,
+                region: selectedRegion ?? preferences.searchRegion,
+                language: selectedLanguage ?? preferences.searchLanguage
+              ) else {
             showHome(in: tab)
             return
         }
@@ -864,10 +1303,27 @@ private final class BrowserViewController: NSViewController {
 
         switch action {
         case "update":
+            let activeSection = queryItems
+                .first(where: { $0.name == "section" })?
+                .value
+                .flatMap(SettingsSection.init(identifier:)) ?? .overview
+
             if let identifier = queryItems.first(where: { $0.name == "search" })?.value,
                let searchEngine = SearchEngine(identifier: identifier),
                searchEngine != preferences.searchEngine {
                 preferences.searchEngine = searchEngine
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "region" })?.value,
+               let searchRegion = SearchRegion(identifier: identifier),
+               searchRegion != preferences.searchRegion {
+                preferences.searchRegion = searchRegion
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "language" })?.value,
+               let searchLanguage = SearchLanguage(identifier: identifier),
+               searchLanguage != preferences.searchLanguage {
+                preferences.searchLanguage = searchLanguage
             }
 
             if let identifier = queryItems.first(where: { $0.name == "tabs" })?.value,
@@ -900,7 +1356,25 @@ private final class BrowserViewController: NSViewController {
                 preferences.homeBackground = homeBackground
             }
 
-            showSettings(in: tab)
+            if let identifier = queryItems.first(where: { $0.name == "adblock" })?.value,
+               let adBlockMode = AdBlockMode(identifier: identifier),
+               adBlockMode != preferences.adBlockMode {
+                preferences.adBlockMode = adBlockMode
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "currencySource" })?.value,
+               let currencySource = CurrencyCode(rawValue: identifier),
+               currencySource != preferences.defaultCurrencySource {
+                preferences.defaultCurrencySource = currencySource
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "currencyTarget" })?.value,
+               let currencyTarget = CurrencyCode(rawValue: identifier),
+               currencyTarget != preferences.defaultCurrencyTarget {
+                preferences.defaultCurrencyTarget = currencyTarget
+            }
+
+            showSettings(in: tab, activeSection: activeSection)
         case "open":
             guard let rawURL = queryItems.first(where: { $0.name == "url" })?.value,
                   let targetURL = URL(string: rawURL) else {
@@ -911,10 +1385,10 @@ private final class BrowserViewController: NSViewController {
             load(targetURL, in: tab)
         case "clear-history":
             BrowserHistoryStore.shared.clear()
-            refreshSettingsTabs()
+            showSettings(in: tab, activeSection: .history)
         case "clear-downloads":
             DownloadHistoryStore.shared.clear()
-            refreshSettingsTabs()
+            showSettings(in: tab, activeSection: .downloads)
         default:
             showSettings(in: tab)
         }
@@ -925,6 +1399,8 @@ private final class BrowserViewController: NSViewController {
             backButton.isEnabled = false
             forwardButton.isEnabled = false
             reloadButton.isEnabled = false
+            hardReloadButton.isEnabled = false
+            screenshotButton.isEnabled = false
             parserButton.isEnabled = false
             addressField.stringValue = ""
             progressIndicator.isHidden = true
@@ -934,6 +1410,8 @@ private final class BrowserViewController: NSViewController {
         backButton.isEnabled = tab.webView.canGoBack
         forwardButton.isEnabled = tab.webView.canGoForward
         reloadButton.isEnabled = true
+        hardReloadButton.isEnabled = true
+        screenshotButton.isEnabled = !tab.webView.bounds.isEmpty
         parserButton.isEnabled = !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser
 
         let reloadSymbol = tab.webView.isLoading ? "xmark" : "arrow.clockwise"
@@ -963,15 +1441,54 @@ private final class BrowserViewController: NSViewController {
             searchEnginePopup.selectItem(at: searchIndex)
         }
 
-        view.window?.title = appName
+        view.window?.title = tab.profile.isPrivateMode ? "\(appName) - Приватно" : appName
     }
 
     private var isEditingAddress: Bool {
         view.window?.firstResponder === addressField.currentEditor()
     }
 
+    private func shouldRecordLocalActivity(for tab: BrowserTab) -> Bool {
+        !tab.profile.isPrivateMode && !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser
+    }
+
     private func tab(for webView: WKWebView) -> BrowserTab? {
         tabs.first { $0.webView === webView }
+    }
+
+    private func prepareDownload(_ download: WKDownload, from webView: WKWebView) {
+        download.delegate = self
+
+        let downloadID = ObjectIdentifier(download)
+        if tab(for: webView)?.profile.isPrivateMode == true {
+            privateDownloads.insert(downloadID)
+        } else {
+            privateDownloads.remove(downloadID)
+        }
+    }
+
+    private func appendCurrencyConversionItem(to menu: NSMenu, webView: WKWebView) {
+        if !menu.items.isEmpty {
+            menu.addItem(.separator())
+        }
+
+        let item = NSMenuItem(
+            title: "Конвертировать выделенную цену",
+            action: #selector(convertSelectionCurrencyCommand(_:)),
+            keyEquivalent: ""
+        )
+        item.target = self
+        item.representedObject = webView
+        menu.addItem(item)
+
+        let scanItem = NSMenuItem(
+            title: "Найти цену на странице",
+            action: #selector(scanPageCurrencyCommand(_:)),
+            keyEquivalent: ""
+        )
+        scanItem.target = self
+        scanItem.representedObject = webView
+        menu.addItem(scanItem)
     }
 
     private func showBlockedURL(_ url: URL, profile: NetworkProfile) {
@@ -1000,12 +1517,75 @@ private final class BrowserViewController: NSViewController {
             alert.runModal()
         }
     }
+
+    private func showScreenshotError(_ error: Error?) {
+        let alert = NSAlert()
+        alert.messageText = "Не удалось скопировать скриншот"
+        alert.informativeText = error?.localizedDescription ?? "Попробуйте ещё раз после загрузки вкладки."
+        alert.alertStyle = .warning
+
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func showCurrencyError(message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Конвертация валюты"
+        alert.informativeText = message
+        alert.alertStyle = .informational
+
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+}
+
+extension BrowserViewController: NSTextFieldDelegate {
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSTextField) === addressField else { return }
+        updateAddressSuggestions()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        guard control === addressField else { return false }
+
+        switch commandSelector {
+        case #selector(NSResponder.moveDown(_:)):
+            if activeAddressSuggestions.isEmpty {
+                updateAddressSuggestions()
+            }
+            moveAddressSuggestionSelection(by: 1)
+            return true
+        case #selector(NSResponder.moveUp(_:)):
+            if activeAddressSuggestions.isEmpty {
+                updateAddressSuggestions()
+            }
+            moveAddressSuggestionSelection(by: -1)
+            return true
+        case #selector(NSResponder.insertNewline(_:)):
+            if applySelectedAddressSuggestion() {
+                return true
+            }
+            loadTypedAddress(control)
+            return true
+        case #selector(NSResponder.cancelOperation(_:)):
+            hideAddressSuggestions()
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         if let tab = tab(for: webView) {
-            if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser {
+            if shouldRecordLocalActivity(for: tab) {
                 PerformanceMonitor.shared.begin(tabID: tab.id)
             }
             tab.syncFromWebView()
@@ -1020,8 +1600,7 @@ extension BrowserViewController: WKNavigationDelegate {
         }
 
         tab.syncFromWebView()
-        if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser,
-           let currentURL = tab.url ?? webView.url {
+        if shouldRecordLocalActivity(for: tab), let currentURL = tab.url ?? webView.url {
             tab.refreshFavicon()
             BrowserHistoryStore.shared.record(url: currentURL, title: tab.displayTitle)
             PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .loaded)
@@ -1034,8 +1613,7 @@ extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         if let tab = tab(for: webView) {
             tab.syncFromWebView()
-            if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser,
-               let currentURL = tab.url ?? webView.url {
+            if shouldRecordLocalActivity(for: tab), let currentURL = tab.url ?? webView.url {
                 PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .failed)
                 refreshSettingsTabs()
             }
@@ -1047,8 +1625,7 @@ extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         if let tab = tab(for: webView) {
             tab.syncFromWebView()
-            if !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser,
-               let currentURL = tab.url ?? webView.url {
+            if shouldRecordLocalActivity(for: tab), let currentURL = tab.url ?? webView.url {
                 PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .failed)
                 refreshSettingsTabs()
             }
@@ -1119,11 +1696,11 @@ extension BrowserViewController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        download.delegate = self
+        prepareDownload(download, from: webView)
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        download.delegate = self
+        prepareDownload(download, from: webView)
     }
 }
 
@@ -1145,28 +1722,52 @@ extension BrowserViewController: WKUIDelegate {
 extension BrowserViewController: WKDownloadDelegate {
     func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
         let destinationURL = DownloadPath.uniqueDestination(for: suggestedFilename)
+        let downloadID = ObjectIdentifier(download)
+
+        if privateDownloads.contains(downloadID) {
+            completionHandler(destinationURL)
+            return
+        }
+
         let id = DownloadHistoryStore.shared.start(
             fileName: destinationURL.lastPathComponent,
             sourceURL: response.url,
             destinationURL: destinationURL
         )
-        activeDownloads[ObjectIdentifier(download)] = id
+        activeDownloads[downloadID] = id
         refreshSettingsTabs()
         completionHandler(destinationURL)
     }
 
     func downloadDidFinish(_ download: WKDownload) {
-        if let id = activeDownloads.removeValue(forKey: ObjectIdentifier(download)) {
+        let downloadID = ObjectIdentifier(download)
+        privateDownloads.remove(downloadID)
+
+        if let id = activeDownloads.removeValue(forKey: downloadID) {
             DownloadHistoryStore.shared.finish(id: id)
             refreshSettingsTabs()
         }
     }
 
     func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
-        if let id = activeDownloads.removeValue(forKey: ObjectIdentifier(download)) {
+        let downloadID = ObjectIdentifier(download)
+        privateDownloads.remove(downloadID)
+
+        if let id = activeDownloads.removeValue(forKey: downloadID) {
             DownloadHistoryStore.shared.fail(id: id, error: error.localizedDescription)
             refreshSettingsTabs()
         }
+    }
+}
+
+@MainActor
+private final class BrowserWebView: WKWebView {
+    var onConfigureContextMenu: ((WKWebView, NSMenu) -> Void)?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        onConfigureContextMenu?(self, menu)
+        return menu
     }
 }
 
@@ -1215,15 +1816,14 @@ private final class BrowserTab {
 
     init(profile: NetworkProfile) {
         self.profile = profile
-        webView = WKWebView(frame: .zero, configuration: profile.makeWebViewConfiguration())
-        webView.customUserAgent = BrowserUserAgent.safari
+        webView = BrowserWebView(frame: .zero, configuration: profile.makeWebViewConfiguration())
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
 
         bindWebViewState()
     }
 
-    func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode) {
+    func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry]) {
         isShowingHome = true
         isShowingSettings = false
         isShowingParser = false
@@ -1233,15 +1833,16 @@ private final class BrowserTab {
         progress = 1
         faviconTask?.cancel()
         faviconCacheKey = nil
-        faviconImage = NSImage(systemSymbolName: "sparkles", accessibilityDescription: appName)
+        let homeSymbol = profile.isPrivateMode ? "eye.slash" : "sparkles"
+        faviconImage = NSImage(systemSymbolName: homeSymbol, accessibilityDescription: appName)
         notifyChanged()
         webView.loadHTMLString(
-            HomePage.html(searchEngine: searchEngine, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground),
+            HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory),
             baseURL: nil
         )
     }
 
-    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode) {
+    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection) {
         isShowingHome = false
         isShowingSettings = true
         isShowingParser = false
@@ -1254,7 +1855,7 @@ private final class BrowserTab {
         faviconImage = NSImage(systemSymbolName: "gearshape", accessibilityDescription: settingsTitle)
         notifyChanged()
         webView.loadHTMLString(
-            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, performance: performance, theme: theme),
+            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, performance: performance, theme: theme, activeSection: activeSection),
             baseURL: nil
         )
     }
@@ -1736,6 +2337,14 @@ private final class AppPreferences {
         didSet { saveAndNotify(key: Keys.searchEngine, value: searchEngine.rawValue) }
     }
 
+    var searchRegion: SearchRegion {
+        didSet { saveAndNotify(key: Keys.searchRegion, value: searchRegion.rawValue) }
+    }
+
+    var searchLanguage: SearchLanguage {
+        didSet { saveAndNotify(key: Keys.searchLanguage, value: searchLanguage.rawValue) }
+    }
+
     var tabPlacement: TabPlacement {
         didSet { saveAndNotify(key: Keys.tabPlacement, value: tabPlacement.rawValue) }
     }
@@ -1756,30 +2365,72 @@ private final class AppPreferences {
         didSet { saveAndNotify(key: Keys.homeBackground, value: homeBackground.rawValue) }
     }
 
+    var adBlockMode: AdBlockMode {
+        didSet { saveAndNotify(key: Keys.adBlockMode, value: adBlockMode.rawValue) }
+    }
+
+    var defaultCurrencySource: CurrencyCode {
+        didSet { saveAndNotify(key: Keys.defaultCurrencySource, value: defaultCurrencySource.rawValue) }
+    }
+
+    var defaultCurrencyTarget: CurrencyCode {
+        didSet { saveAndNotify(key: Keys.defaultCurrencyTarget, value: defaultCurrencyTarget.rawValue) }
+    }
+
+    var currencyAPIKey: String {
+        didSet { saveAndNotify(key: Keys.currencyAPIKey, value: currencyAPIKey) }
+    }
+
     private enum Keys {
         static let searchEngine = "searchEngine"
+        static let searchRegion = "searchRegion"
+        static let searchLanguage = "searchLanguage"
         static let tabPlacement = "tabPlacement"
         static let theme = "theme"
         static let colorScheme = "colorScheme"
         static let design = "design"
         static let homeBackground = "homeBackground"
+        static let adBlockMode = "adBlockMode"
+        static let defaultCurrencySource = "defaultCurrencySource"
+        static let defaultCurrencyTarget = "defaultCurrencyTarget"
+        static let currencyAPIKey = "currencyAPIKey"
     }
 
     private let defaults = UserDefaults.standard
 
     private init() {
         searchEngine = SearchEngine(rawValue: defaults.integer(forKey: Keys.searchEngine)) ?? .duckDuckGo
+        searchRegion = SearchRegion(rawValue: defaults.integer(forKey: Keys.searchRegion)) ?? .automatic
+        searchLanguage = SearchLanguage(rawValue: defaults.integer(forKey: Keys.searchLanguage)) ?? .automatic
         let savedTabPlacement = defaults.object(forKey: Keys.tabPlacement) as? Int
         tabPlacement = savedTabPlacement.flatMap(TabPlacement.init(rawValue:)) ?? .top
         theme = ThemeMode(rawValue: defaults.integer(forKey: Keys.theme)) ?? .system
         colorScheme = ColorSchemeMode(rawValue: defaults.integer(forKey: Keys.colorScheme)) ?? .aurora
         design = DesignMode(rawValue: defaults.integer(forKey: Keys.design)) ?? .balanced
         homeBackground = HomeBackgroundMode(rawValue: defaults.integer(forKey: Keys.homeBackground)) ?? .gradient
+        adBlockMode = AdBlockMode(rawValue: defaults.integer(forKey: Keys.adBlockMode)) ?? .compatible
+        defaultCurrencySource = Self.currencyCode(for: Keys.defaultCurrencySource, defaults: defaults, fallback: .pln)
+        defaultCurrencyTarget = Self.currencyCode(for: Keys.defaultCurrencyTarget, defaults: defaults, fallback: .usd)
+        currencyAPIKey = defaults.string(forKey: Keys.currencyAPIKey) ?? ""
     }
 
     private func saveAndNotify(key: String, value: Int) {
         defaults.set(value, forKey: key)
         NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+
+    private func saveAndNotify(key: String, value: String) {
+        defaults.set(value, forKey: key)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+
+    private static func currencyCode(for key: String, defaults: UserDefaults, fallback: CurrencyCode) -> CurrencyCode {
+        guard let value = defaults.string(forKey: key),
+              let code = CurrencyCode(rawValue: value) else {
+            return fallback
+        }
+
+        return code
     }
 }
 
@@ -2702,6 +3353,289 @@ private enum HomeBackgroundMode: Int, CaseIterable {
     }
 }
 
+private enum AdBlockMode: Int, CaseIterable {
+    case compatible
+    case strict
+
+    var title: String {
+        switch self {
+        case .compatible:
+            return "Совместимая"
+        case .strict:
+            return "Строгая"
+        }
+    }
+
+    var identifier: String {
+        switch self {
+        case .compatible:
+            return "compatible"
+        case .strict:
+            return "strict"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let mode = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = mode
+    }
+}
+
+private enum SearchRegion: Int, CaseIterable {
+    case automatic
+    case poland
+    case unitedStates
+    case unitedKingdom
+    case germany
+    case france
+    case spain
+    case ukraine
+    case russia
+
+    var title: String {
+        switch self {
+        case .automatic:
+            return "Авто-регион"
+        case .poland:
+            return "Польша"
+        case .unitedStates:
+            return "США"
+        case .unitedKingdom:
+            return "Великобритания"
+        case .germany:
+            return "Германия"
+        case .france:
+            return "Франция"
+        case .spain:
+            return "Испания"
+        case .ukraine:
+            return "Украина"
+        case .russia:
+            return "Россия"
+        }
+    }
+
+    var identifier: String {
+        switch self {
+        case .automatic:
+            return "auto"
+        case .poland:
+            return "pl"
+        case .unitedStates:
+            return "us"
+        case .unitedKingdom:
+            return "gb"
+        case .germany:
+            return "de"
+        case .france:
+            return "fr"
+        case .spain:
+            return "es"
+        case .ukraine:
+            return "ua"
+        case .russia:
+            return "ru"
+        }
+    }
+
+    var countryCode: String? {
+        switch self {
+        case .automatic:
+            return nil
+        case .poland:
+            return "PL"
+        case .unitedStates:
+            return "US"
+        case .unitedKingdom:
+            return "GB"
+        case .germany:
+            return "DE"
+        case .france:
+            return "FR"
+        case .spain:
+            return "ES"
+        case .ukraine:
+            return "UA"
+        case .russia:
+            return "RU"
+        }
+    }
+
+    var defaultLanguageCode: String? {
+        switch self {
+        case .automatic:
+            return nil
+        case .poland:
+            return "pl"
+        case .unitedStates, .unitedKingdom:
+            return "en"
+        case .germany:
+            return "de"
+        case .france:
+            return "fr"
+        case .spain:
+            return "es"
+        case .ukraine:
+            return "uk"
+        case .russia:
+            return "ru"
+        }
+    }
+
+    var duckDuckGoRegion: String? {
+        switch self {
+        case .automatic:
+            return nil
+        case .poland:
+            return "pl-pl"
+        case .unitedStates:
+            return "us-en"
+        case .unitedKingdom:
+            return "uk-en"
+        case .germany:
+            return "de-de"
+        case .france:
+            return "fr-fr"
+        case .spain:
+            return "es-es"
+        case .ukraine:
+            return "ua-uk"
+        case .russia:
+            return "ru-ru"
+        }
+    }
+
+    var googleCountryRestriction: String? {
+        countryCode.map { "country\($0)" }
+    }
+
+    var yandexRegionID: String? {
+        switch self {
+        case .russia:
+            return "225"
+        case .ukraine:
+            return "187"
+        case .automatic, .poland, .unitedStates, .unitedKingdom, .germany, .france, .spain:
+            return nil
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let region = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = region
+    }
+}
+
+private enum SearchLanguage: Int, CaseIterable {
+    case automatic
+    case polish
+    case russian
+    case english
+    case german
+    case french
+    case spanish
+    case ukrainian
+
+    var title: String {
+        switch self {
+        case .automatic:
+            return "Авто-язык"
+        case .polish:
+            return "Польский"
+        case .russian:
+            return "Русский"
+        case .english:
+            return "Английский"
+        case .german:
+            return "Немецкий"
+        case .french:
+            return "Французский"
+        case .spanish:
+            return "Испанский"
+        case .ukrainian:
+            return "Украинский"
+        }
+    }
+
+    var identifier: String {
+        switch self {
+        case .automatic:
+            return "auto"
+        case .polish:
+            return "pl"
+        case .russian:
+            return "ru"
+        case .english:
+            return "en"
+        case .german:
+            return "de"
+        case .french:
+            return "fr"
+        case .spanish:
+            return "es"
+        case .ukrainian:
+            return "uk"
+        }
+    }
+
+    var code: String? {
+        self == .automatic ? nil : identifier
+    }
+
+    var defaultRegion: SearchRegion? {
+        switch self {
+        case .automatic:
+            return nil
+        case .polish:
+            return .poland
+        case .russian:
+            return .russia
+        case .english:
+            return .unitedStates
+        case .german:
+            return .germany
+        case .french:
+            return .france
+        case .spanish:
+            return .spain
+        case .ukrainian:
+            return .ukraine
+        }
+    }
+
+    var googleLanguageRestriction: String? {
+        code.map { "lang_\($0)" }
+    }
+
+    func interfaceLocale(region: SearchRegion) -> String? {
+        guard let code else { return nil }
+        let countryCode = region.countryCode ?? defaultRegion?.countryCode
+
+        if let countryCode {
+            return "\(code)-\(countryCode)"
+        }
+
+        return code
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let language = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = language
+    }
+}
+
 private enum SearchEngine: Int, CaseIterable {
     case duckDuckGo
     case google
@@ -2758,25 +3692,89 @@ private enum SearchEngine: Int, CaseIterable {
         self = engine
     }
 
-    func searchURL(for query: String) -> URL? {
-        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-
+    func searchURL(for query: String, region: SearchRegion, language: SearchLanguage) -> URL? {
         switch self {
         case .duckDuckGo:
-            return URL(string: "https://duckduckgo.com/?q=\(encoded)")
+            var queryItems = [URLQueryItem(name: "q", value: query)]
+            if let duckRegion = region.duckDuckGoRegion ?? language.defaultRegion?.duckDuckGoRegion {
+                queryItems.append(URLQueryItem(name: "kl", value: duckRegion))
+            }
+
+            return makeSearchURL(host: "duckduckgo.com", path: "/", queryItems: queryItems)
         case .google:
-            return URL(string: "https://www.google.com/search?q=\(encoded)")
+            var queryItems = [URLQueryItem(name: "q", value: query)]
+            if let countryCode = region.countryCode?.lowercased() {
+                queryItems.append(URLQueryItem(name: "gl", value: countryCode))
+            }
+            if let countryRestriction = region.googleCountryRestriction {
+                queryItems.append(URLQueryItem(name: "cr", value: countryRestriction))
+            }
+            if let languageCode = language.code {
+                queryItems.append(URLQueryItem(name: "hl", value: languageCode))
+            }
+            if let languageRestriction = language.googleLanguageRestriction {
+                queryItems.append(URLQueryItem(name: "lr", value: languageRestriction))
+            }
+
+            return makeSearchURL(host: "www.google.com", path: "/search", queryItems: queryItems)
         case .yandex:
-            return URL(string: "https://yandex.com/search/?text=\(encoded)")
+            var queryItems = [URLQueryItem(name: "text", value: query)]
+            if let languageCode = language.code {
+                queryItems.append(URLQueryItem(name: "lang", value: languageCode))
+            }
+            if let regionID = region.yandexRegionID {
+                queryItems.append(URLQueryItem(name: "lr", value: regionID))
+            }
+
+            return makeSearchURL(host: "yandex.com", path: "/search/", queryItems: queryItems)
         case .brave:
-            return URL(string: "https://search.brave.com/search?q=\(encoded)")
+            var queryItems = [URLQueryItem(name: "q", value: query)]
+            let marketRegion = region == .automatic ? language.defaultRegion : region
+            if let countryCode = marketRegion?.countryCode?.lowercased() {
+                queryItems.append(URLQueryItem(name: "country", value: countryCode))
+            }
+            if let languageCode = language.code {
+                queryItems.append(URLQueryItem(name: "search_lang", value: languageCode))
+            }
+            if let locale = language.interfaceLocale(region: region) {
+                queryItems.append(URLQueryItem(name: "ui_lang", value: locale))
+            }
+
+            return makeSearchURL(host: "search.brave.com", path: "/search", queryItems: queryItems)
         case .bing:
-            return URL(string: "https://www.bing.com/search?q=\(encoded)")
+            var queryItems = [URLQueryItem(name: "q", value: query)]
+            if let market = bingMarket(region: region, language: language) {
+                queryItems.append(URLQueryItem(name: "mkt", value: market))
+            }
+            if let languageCode = language.code {
+                queryItems.append(URLQueryItem(name: "setLang", value: languageCode))
+            }
+
+            return makeSearchURL(host: "www.bing.com", path: "/search", queryItems: queryItems)
         case .ecosia:
-            return URL(string: "https://www.ecosia.org/search?q=\(encoded)")
+            return makeSearchURL(host: "www.ecosia.org", path: "/search", queryItems: [URLQueryItem(name: "q", value: query)])
         case .startpage:
-            return URL(string: "https://www.startpage.com/sp/search?query=\(encoded)")
+            return makeSearchURL(host: "www.startpage.com", path: "/sp/search", queryItems: [URLQueryItem(name: "query", value: query)])
         }
+    }
+
+    private func makeSearchURL(host: String, path: String, queryItems: [URLQueryItem]) -> URL? {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = host
+        components.path = path
+        components.queryItems = queryItems
+        return components.url
+    }
+
+    private func bingMarket(region: SearchRegion, language: SearchLanguage) -> String? {
+        let marketRegion = region == .automatic ? language.defaultRegion : region
+        guard let countryCode = marketRegion?.countryCode,
+              let marketLanguage = marketRegion?.defaultLanguageCode ?? language.code else {
+            return nil
+        }
+
+        return "\(marketLanguage)-\(countryCode)"
     }
 }
 
@@ -2839,12 +3837,20 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
         }
     }
 
+    var isPrivateMode: Bool {
+        switch self {
+        case .privateBrowsing, .tor:
+            return true
+        case .system, .localhost:
+            return false
+        }
+    }
+
     @MainActor
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
-        configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
-        AdBlocker.install(in: configuration)
+        AdBlocker.install(in: configuration, mode: AppPreferences.shared.adBlockMode)
 
         switch self {
         case .system:
@@ -2893,7 +3899,9 @@ private enum BrowserUserAgent {
 }
 
 private enum AdBlocker {
-    private static let contentRuleIdentifier = "NorthStarAggressiveAdBlocker.v1"
+    private static func contentRuleIdentifier(for mode: AdBlockMode) -> String {
+        "NorthStarAdBlocker.\(mode.identifier).v2"
+    }
 
     private static let blockedHostSuffixes = [
         "2mdn.net",
@@ -2944,32 +3952,62 @@ private enum AdBlocker {
         "vast?"
     ]
 
+    private static let compatibleAllowedHostSuffixes = [
+        "consensu.org",
+        "google-analytics.com",
+        "googletagmanager.com",
+        "quantserve.com",
+        "scorecardresearch.com"
+    ]
+
+    private static let compatibleBlockedURLFragments = [
+        "/adserver/",
+        "/gampad/",
+        "/pagead/",
+        "adservice.",
+        "adsystem",
+        "googleads",
+        "prebid",
+        "vast?"
+    ]
+
     static func shouldBlock(_ url: URL) -> Bool {
+        shouldBlock(url, mode: AppPreferences.shared.adBlockMode)
+    }
+
+    static func shouldBlock(_ url: URL, mode: AdBlockMode) -> Bool {
         guard let scheme = url.scheme?.lowercased(),
               ["http", "https"].contains(scheme) else {
             return false
         }
 
         let host = url.host(percentEncoded: false)?.lowercased() ?? ""
+        if mode == .compatible,
+           compatibleAllowedHostSuffixes.contains(where: { host == $0 || host.hasSuffix(".\($0)") }) {
+            return false
+        }
+
         if blockedHostSuffixes.contains(where: { host == $0 || host.hasSuffix(".\($0)") }) {
             return true
         }
 
         let absoluteString = url.absoluteString.lowercased()
-        return blockedURLFragments.contains { absoluteString.contains($0) }
+        let fragments = mode == .compatible ? compatibleBlockedURLFragments : blockedURLFragments
+        return fragments.contains { absoluteString.contains($0) }
     }
 
     @MainActor
-    static func install(in configuration: WKWebViewConfiguration) {
+    static func install(in configuration: WKWebViewConfiguration, mode: AdBlockMode) {
         let userContentController = WKUserContentController()
-        userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        userContentController.addUserScript(WKUserScript(source: script(for: mode), injectionTime: .atDocumentStart, forMainFrameOnly: false))
         configuration.userContentController = userContentController
 
         guard let store = WKContentRuleListStore.default() else {
             return
         }
 
-        store.lookUpContentRuleList(forIdentifier: contentRuleIdentifier) { existingList, _ in
+        let identifier = contentRuleIdentifier(for: mode)
+        store.lookUpContentRuleList(forIdentifier: identifier) { existingList, _ in
             if let existingList {
                 DispatchQueue.main.async {
                     userContentController.add(existingList)
@@ -2977,7 +4015,7 @@ private enum AdBlocker {
                 return
             }
 
-            store.compileContentRuleList(forIdentifier: contentRuleIdentifier, encodedContentRuleList: contentRules) { compiledList, _ in
+            store.compileContentRuleList(forIdentifier: identifier, encodedContentRuleList: contentRules(for: mode)) { compiledList, _ in
                 guard let compiledList else { return }
                 DispatchQueue.main.async {
                     userContentController.add(compiledList)
@@ -2986,7 +4024,56 @@ private enum AdBlocker {
         }
     }
 
-    private static let contentRules = """
+    private static func contentRules(for mode: AdBlockMode) -> String {
+        switch mode {
+        case .compatible:
+            return compatibleContentRules
+        case .strict:
+            return strictContentRules
+        }
+    }
+
+    private static func script(for mode: AdBlockMode) -> String {
+        switch mode {
+        case .compatible:
+            return compatibleScript
+        case .strict:
+            return strictScript
+        }
+    }
+
+    private static let compatibleContentRules = """
+    [
+      { "trigger": { "url-filter": ".*2mdn\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adform\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adnxs\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adsafeprotected\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adsrvr\\\\.org.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adservice\\\\.google\\\\..*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*advertising\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*amazon-adsystem\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*appnexus\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*bidswitch\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*casalemedia\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*criteo\\\\.(com|net).*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*doubleclick\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*googlesyndication\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*googletagservices\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*imasdk\\\\.googleapis\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*moatads\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*nitropay\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*openx\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*outbrain\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*pubmatic\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*rubiconproject\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*smartadserver\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*taboola\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*yieldmo\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*(/adserver/|/gampad/|/pagead/|googleads|prebid|vast\\\\?).*" }, "action": { "type": "block" } }
+    ]
+    """
+
+    private static let strictContentRules = """
     [
       { "trigger": { "url-filter": ".*2mdn\\\\.net.*" }, "action": { "type": "block" } },
       { "trigger": { "url-filter": ".*adform\\\\.net.*" }, "action": { "type": "block" } },
@@ -3021,7 +4108,58 @@ private enum AdBlocker {
     ]
     """
 
-    private static let script = """
+    private static let compatibleScript = """
+    (() => {
+      const selectors = [
+        ".adsbygoogle",
+        ".ad-banner",
+        ".ad-container",
+        ".ad-slot",
+        ".ad_unit",
+        ".adbox",
+        ".adframe",
+        ".adslot",
+        ".advert",
+        ".advertisement",
+        ".banner-ad",
+        ".google-auto-placed",
+        ".nitro-ad",
+        ".nitro-ad-container",
+        "[aria-label='Advertisement']",
+        "[data-ad]",
+        "[data-ad-client]",
+        "[data-ad-slot]",
+        "[data-google-query-id]",
+        "iframe[src*='2mdn.net']",
+        "iframe[src*='adservice.google']",
+        "iframe[src*='doubleclick.net']",
+        "iframe[src*='googlesyndication.com']",
+        "iframe[src*='imasdk.googleapis.com']",
+        "iframe[src*='nitropay.com']",
+        "ins.adsbygoogle"
+      ];
+      const selectorText = selectors.join(",");
+      const ensureStyle = () => {
+        if (document.getElementById("northstar-adblock-style")) return;
+        const style = document.createElement("style");
+        style.id = "northstar-adblock-style";
+        style.textContent = selectorText + "{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;max-height:0!important;max-width:0!important;overflow:hidden!important;}";
+        (document.head || document.documentElement).appendChild(style);
+      };
+      const start = () => {
+        ensureStyle();
+        const observer = new MutationObserver(() => ensureStyle());
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      };
+      if (document.documentElement) {
+        start();
+      } else {
+        document.addEventListener("DOMContentLoaded", start, { once: true });
+      }
+    })();
+    """
+
+    private static let strictScript = """
     (() => {
       const selectors = [
         ".adsbygoogle",
@@ -3162,6 +4300,666 @@ private enum NetworkPolicy {
             || host.hasPrefix("127.")
             || host == "0.0.0.0"
     }
+}
+
+private enum CurrencyCode: String, CaseIterable {
+    case pln = "PLN"
+    case usd = "USD"
+    case eur = "EUR"
+    case gbp = "GBP"
+    case uah = "UAH"
+    case rub = "RUB"
+    case chf = "CHF"
+    case czk = "CZK"
+    case sek = "SEK"
+    case nok = "NOK"
+    case dkk = "DKK"
+    case cad = "CAD"
+    case aud = "AUD"
+    case jpy = "JPY"
+
+    var title: String {
+        switch self {
+        case .pln: return "PLN - польский злотый"
+        case .usd: return "USD - доллар США"
+        case .eur: return "EUR - евро"
+        case .gbp: return "GBP - фунт"
+        case .uah: return "UAH - гривна"
+        case .rub: return "RUB - рубль"
+        case .chf: return "CHF - франк"
+        case .czk: return "CZK - чешская крона"
+        case .sek: return "SEK - шведская крона"
+        case .nok: return "NOK - норвежская крона"
+        case .dkk: return "DKK - датская крона"
+        case .cad: return "CAD - канадский доллар"
+        case .aud: return "AUD - австралийский доллар"
+        case .jpy: return "JPY - иена"
+        }
+    }
+}
+
+private struct CurrencyAmount {
+    let amount: Double
+    let currency: CurrencyCode
+}
+
+private struct CurrencyConversionRequest {
+    let amount: Double
+    let source: CurrencyCode
+    let target: CurrencyCode
+}
+
+private struct CurrencyConversionResult {
+    let amount: Double
+    let source: CurrencyCode
+    let target: CurrencyCode
+    let rate: Double
+    let convertedAmount: Double
+    let updatedAt: String?
+}
+
+private enum CurrencyConversionError: LocalizedError {
+    case invalidURL
+    case api(String)
+    case missingResult
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Не удалось собрать запрос к ExchangeRate-API."
+        case .api(let message):
+            return "ExchangeRate-API: \(message)"
+        case .missingResult:
+            return "API не вернул результат конвертации."
+        }
+    }
+}
+
+private enum CurrencyScanError: LocalizedError {
+    case notFound
+
+    var errorDescription: String? {
+        switch self {
+        case .notFound:
+            return "Не нашёл цену с валютой на видимой части страницы."
+        }
+    }
+}
+
+private enum CurrencyConverterService {
+    private struct PairResponse: Decodable {
+        let result: String
+        let baseCode: String?
+        let targetCode: String?
+        let conversionRate: Double?
+        let conversionResult: Double?
+        let timeLastUpdateUTC: String?
+        let errorType: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case result
+            case baseCode = "base_code"
+            case targetCode = "target_code"
+            case conversionRate = "conversion_rate"
+            case conversionResult = "conversion_result"
+            case timeLastUpdateUTC = "time_last_update_utc"
+            case errorType = "error-type"
+        }
+    }
+
+    static func convert(amount: Double, source: CurrencyCode, target: CurrencyCode, apiKey: String) async throws -> CurrencyConversionResult {
+        let amountText = Self.apiAmountFormatter.string(from: NSNumber(value: amount)) ?? "\(amount)"
+        guard let url = URL(string: "https://v6.exchangerate-api.com/v6/\(apiKey)/pair/\(source.rawValue)/\(target.rawValue)/\(amountText)") else {
+            throw CurrencyConversionError.invalidURL
+        }
+
+        let (data, _) = try await URLSession.shared.data(from: url)
+        let response = try JSONDecoder().decode(PairResponse.self, from: data)
+
+        guard response.result == "success" else {
+            throw CurrencyConversionError.api(response.errorType ?? response.result)
+        }
+
+        guard let rate = response.conversionRate,
+              let convertedAmount = response.conversionResult else {
+            throw CurrencyConversionError.missingResult
+        }
+
+        return CurrencyConversionResult(
+            amount: amount,
+            source: source,
+            target: target,
+            rate: rate,
+            convertedAmount: convertedAmount,
+            updatedAt: response.timeLastUpdateUTC
+        )
+    }
+
+    private static let apiAmountFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 6
+        formatter.usesGroupingSeparator = false
+        return formatter
+    }()
+}
+
+private enum CurrencyAmountParser {
+    static func parse(_ text: String, defaultCurrency: CurrencyCode) -> CurrencyAmount? {
+        guard let amount = number(from: text) else { return nil }
+        return CurrencyAmount(amount: amount, currency: detectedCurrency(in: text) ?? defaultCurrency)
+    }
+
+    static func bestCandidate(in fragments: [String], defaultCurrency: CurrencyCode) -> CurrencyAmount? {
+        let candidates = fragments.compactMap { fragment -> CurrencyAmount? in
+            guard let amount = parse(fragment, defaultCurrency: defaultCurrency),
+                  amount.amount > 0 else {
+                return nil
+            }
+
+            return amount
+        }
+
+        return candidates
+            .filter { $0.amount < 1_000_000_000 }
+            .max { lhs, rhs in
+                lhs.amount < rhs.amount
+            }
+    }
+
+    static func number(from text: String) -> Double? {
+        let pattern = #"[0-9][0-9\s\u{00A0}.,]*"#
+        guard let range = text.range(of: pattern, options: .regularExpression) else { return nil }
+
+        let rawNumber = String(text[range])
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let compact = rawNumber.replacingOccurrences(of: " ", with: "")
+        guard !compact.isEmpty else { return nil }
+
+        let decimalSeparator = Self.decimalSeparator(in: compact)
+        let normalized = compact.enumerated().compactMap { index, character -> Character? in
+            if character.isNumber {
+                return character
+            }
+
+            if let decimalSeparator,
+               character == decimalSeparator,
+               compact.index(compact.startIndex, offsetBy: index) == compact.lastIndex(of: decimalSeparator) {
+                return "."
+            }
+
+            return nil
+        }
+
+        return Double(String(normalized))
+    }
+
+    private static func detectedCurrency(in text: String) -> CurrencyCode? {
+        let lowercased = text.lowercased()
+        let matches: [(CurrencyCode, [String])] = [
+            (.pln, ["pln", "zł", "zl"]),
+            (.usd, ["usd", "us$", "$"]),
+            (.eur, ["eur", "€"]),
+            (.gbp, ["gbp", "£"]),
+            (.uah, ["uah", "грн", "₴"]),
+            (.rub, ["rub", "руб", "₽"]),
+            (.chf, ["chf"]),
+            (.czk, ["czk", "kč", "kc"]),
+            (.sek, ["sek"]),
+            (.nok, ["nok"]),
+            (.dkk, ["dkk"]),
+            (.cad, ["cad"]),
+            (.aud, ["aud"]),
+            (.jpy, ["jpy", "¥"])
+        ]
+
+        return matches.first { _, tokens in
+            tokens.contains { lowercased.contains($0) }
+        }?.0
+    }
+
+    private static func decimalSeparator(in text: String) -> Character? {
+        let comma = text.lastIndex(of: ",")
+        let dot = text.lastIndex(of: ".")
+
+        if let comma, let dot {
+            return comma > dot ? "," : "."
+        }
+
+        if let comma {
+            return isLikelyDecimalSeparator(at: comma, in: text) ? "," : nil
+        }
+
+        if let dot {
+            return isLikelyDecimalSeparator(at: dot, in: text) ? "." : nil
+        }
+
+        return nil
+    }
+
+    private static func isLikelyDecimalSeparator(at index: String.Index, in text: String) -> Bool {
+        let digitsAfter = text[text.index(after: index)...].filter(\.isNumber).count
+        return (1...2).contains(digitsAfter)
+    }
+}
+
+private struct AddressSuggestion {
+    let title: String
+    let detail: String
+    let input: String
+    let url: URL?
+    let symbolName: String
+    let identity: String
+
+    init(title: String, detail: String, input: String, url: URL?, symbolName: String, identity: String? = nil) {
+        self.title = title
+        self.detail = detail
+        self.input = input
+        self.url = url
+        self.symbolName = symbolName
+        self.identity = identity ?? url?.absoluteString ?? input.lowercased()
+    }
+
+    static func displayText(for url: URL) -> String {
+        if let host = url.host(percentEncoded: false), !host.isEmpty {
+            let path = url.path == "/" ? "" : url.path
+            return "\(host)\(path)"
+        }
+
+        return url.absoluteString
+    }
+}
+
+@MainActor
+private final class AddressSuggestionViewController: NSViewController {
+    var onSelect: ((AddressSuggestion) -> Void)?
+
+    private let stackView = NSStackView()
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+        stackView.orientation = .vertical
+        stackView.alignment = .width
+        stackView.spacing = 4
+        stackView.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        view.addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            stackView.topAnchor.constraint(equalTo: view.topAnchor),
+            stackView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            stackView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            stackView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+    }
+
+    func update(suggestions: [AddressSuggestion], selectedIndex: Int?, width: CGFloat) {
+        stackView.arrangedSubviews.forEach {
+            stackView.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+
+        for (index, suggestion) in suggestions.enumerated() {
+            let row = AddressSuggestionRowView()
+            row.configure(suggestion: suggestion, isSelected: index == selectedIndex)
+            row.onSelect = { [weak self, suggestion] in
+                self?.onSelect?(suggestion)
+            }
+            stackView.addArrangedSubview(row)
+        }
+
+        preferredContentSize = NSSize(
+            width: max(340, min(560, width)),
+            height: CGFloat(suggestions.count) * 44 + 10
+        )
+    }
+}
+
+@MainActor
+private final class AddressSuggestionRowView: NSControl {
+    var onSelect: (() -> Void)?
+
+    private let iconView = NSImageView()
+    private let titleField = NSTextField(labelWithString: "")
+    private let detailField = NSTextField(labelWithString: "")
+    private var isSelected = false
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+        layer?.cornerRadius = 8
+
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.imageScaling = .scaleProportionallyDown
+        iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        iconView.contentTintColor = .secondaryLabelColor
+
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        titleField.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleField.lineBreakMode = .byTruncatingTail
+
+        detailField.translatesAutoresizingMaskIntoConstraints = false
+        detailField.font = .systemFont(ofSize: 11.5)
+        detailField.textColor = .secondaryLabelColor
+        detailField.lineBreakMode = .byTruncatingMiddle
+
+        addSubview(iconView)
+        addSubview(titleField)
+        addSubview(detailField)
+
+        NSLayoutConstraint.activate([
+            heightAnchor.constraint(equalToConstant: 40),
+
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 18),
+            iconView.heightAnchor.constraint(equalToConstant: 18),
+
+            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 6),
+            titleField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
+            titleField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+
+            detailField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 2),
+            detailField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
+            detailField.trailingAnchor.constraint(equalTo: titleField.trailingAnchor)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func configure(suggestion: AddressSuggestion, isSelected: Bool) {
+        self.isSelected = isSelected
+        iconView.image = NSImage(systemSymbolName: suggestion.symbolName, accessibilityDescription: suggestion.title)
+        titleField.stringValue = suggestion.title
+        detailField.stringValue = suggestion.detail
+        applyState()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        onSelect?()
+    }
+
+    private func applyState() {
+        layer?.backgroundColor = isSelected
+            ? NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+            : NSColor.clear.cgColor
+    }
+}
+
+@MainActor
+private final class CurrencyConverterViewController: NSViewController {
+    var onConvert: ((CurrencyConversionRequest) -> Void)?
+    var onScanPage: (() -> Void)?
+
+    private let amountField = NSTextField()
+    private let sourcePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let targetPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let convertButton = NSButton(title: "Посчитать", target: nil, action: nil)
+    private let scanButton = NSButton(title: "Найти цену на странице", target: nil, action: nil)
+    private let swapButton = NSButton(title: "Поменять валюты", target: nil, action: nil)
+    private let resultContainer = NSView()
+    private let resultField = NSTextField(labelWithString: "Выделите цену или нажмите сканирование.")
+    private let rateField = NSTextField(labelWithString: "")
+    private let hintField = NSTextField(labelWithString: "Правая кнопка по цене на сайте тоже откроет конвертацию.")
+
+    override func loadView() {
+        view = NSView()
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+
+        let root = NSStackView()
+        root.translatesAutoresizingMaskIntoConstraints = false
+        root.orientation = .vertical
+        root.alignment = .width
+        root.spacing = 14
+        root.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+        view.addSubview(root)
+
+        let titleField = NSTextField(labelWithString: "Конвертер валют")
+        titleField.font = .systemFont(ofSize: 18, weight: .bold)
+
+        resultContainer.translatesAutoresizingMaskIntoConstraints = false
+        resultContainer.wantsLayer = true
+        resultContainer.layer?.cornerRadius = 12
+        resultContainer.layer?.borderWidth = 1
+        resultContainer.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.34).cgColor
+        resultContainer.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.42).cgColor
+
+        resultField.translatesAutoresizingMaskIntoConstraints = false
+        resultField.font = .systemFont(ofSize: 19, weight: .bold)
+        resultField.lineBreakMode = .byWordWrapping
+        resultField.maximumNumberOfLines = 3
+
+        rateField.translatesAutoresizingMaskIntoConstraints = false
+        rateField.font = .systemFont(ofSize: 12)
+        rateField.textColor = .secondaryLabelColor
+        rateField.lineBreakMode = .byWordWrapping
+        rateField.maximumNumberOfLines = 3
+
+        resultContainer.addSubview(resultField)
+        resultContainer.addSubview(rateField)
+
+        amountField.translatesAutoresizingMaskIntoConstraints = false
+        amountField.placeholderString = "Сумма"
+        amountField.font = .systemFont(ofSize: 16, weight: .semibold)
+        amountField.bezelStyle = .roundedBezel
+        amountField.target = self
+        amountField.action = #selector(convert(_:))
+
+        [sourcePopup, targetPopup].forEach { popup in
+            popup.translatesAutoresizingMaskIntoConstraints = false
+            popup.controlSize = .regular
+            popup.font = .systemFont(ofSize: 13)
+            popup.removeAllItems()
+            popup.addItems(withTitles: CurrencyCode.allCases.map(\.title))
+        }
+
+        [convertButton, scanButton, swapButton].forEach { button in
+            button.translatesAutoresizingMaskIntoConstraints = false
+            button.bezelStyle = .rounded
+            button.controlSize = .regular
+            button.font = .systemFont(ofSize: 13, weight: .semibold)
+        }
+        convertButton.target = self
+        convertButton.action = #selector(convert(_:))
+        scanButton.target = self
+        scanButton.action = #selector(scanPage(_:))
+        swapButton.target = self
+        swapButton.action = #selector(swapCurrencies(_:))
+
+        hintField.font = .systemFont(ofSize: 12)
+        hintField.textColor = .secondaryLabelColor
+        hintField.lineBreakMode = .byWordWrapping
+        hintField.maximumNumberOfLines = 2
+
+        let currencyGrid = NSGridView(views: [
+            [labeledControl(title: "Сумма", control: amountField)],
+            [labeledControl(title: "Из", control: sourcePopup)],
+            [labeledControl(title: "В", control: targetPopup)]
+        ])
+        currencyGrid.translatesAutoresizingMaskIntoConstraints = false
+        currencyGrid.rowSpacing = 10
+
+        let buttonRow = NSStackView(views: [convertButton, scanButton])
+        buttonRow.translatesAutoresizingMaskIntoConstraints = false
+        buttonRow.orientation = .horizontal
+        buttonRow.alignment = .centerY
+        buttonRow.distribution = .fillEqually
+        buttonRow.spacing = 8
+
+        root.addArrangedSubview(titleField)
+        root.addArrangedSubview(resultContainer)
+        root.addArrangedSubview(currencyGrid)
+        root.addArrangedSubview(swapButton)
+        root.addArrangedSubview(buttonRow)
+        root.addArrangedSubview(hintField)
+
+        NSLayoutConstraint.activate([
+            root.topAnchor.constraint(equalTo: view.topAnchor),
+            root.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            root.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            root.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            view.widthAnchor.constraint(equalToConstant: 390),
+
+            resultContainer.heightAnchor.constraint(greaterThanOrEqualToConstant: 98),
+            resultField.topAnchor.constraint(equalTo: resultContainer.topAnchor, constant: 14),
+            resultField.leadingAnchor.constraint(equalTo: resultContainer.leadingAnchor, constant: 14),
+            resultField.trailingAnchor.constraint(equalTo: resultContainer.trailingAnchor, constant: -14),
+
+            rateField.topAnchor.constraint(equalTo: resultField.bottomAnchor, constant: 8),
+            rateField.leadingAnchor.constraint(equalTo: resultField.leadingAnchor),
+            rateField.trailingAnchor.constraint(equalTo: resultField.trailingAnchor),
+            rateField.bottomAnchor.constraint(lessThanOrEqualTo: resultContainer.bottomAnchor, constant: -14)
+        ])
+
+        preferredContentSize = NSSize(width: 390, height: 430)
+    }
+
+    func configure(amount: Double?, source: CurrencyCode, target: CurrencyCode, apiKeyPresent: Bool, canScanPage: Bool) {
+        if let amount {
+            amountField.stringValue = CurrencyDisplay.plainAmount(amount)
+        } else if amountField.stringValue.isEmpty {
+            amountField.stringValue = ""
+        }
+
+        select(source, in: sourcePopup)
+        select(target, in: targetPopup)
+        resultField.stringValue = apiKeyPresent
+            ? "Готов к конвертации"
+            : "Ключ API не настроен"
+        rateField.stringValue = ""
+        scanButton.isEnabled = canScanPage
+        convertButton.isEnabled = apiKeyPresent
+        hintField.stringValue = canScanPage
+            ? "Можно выделить цену, открыть меню правой кнопкой или отсканировать страницу."
+            : "Откройте обычную страницу, чтобы сканировать цены."
+    }
+
+    func showLoading() {
+        convertButton.isEnabled = false
+        scanButton.isEnabled = false
+        resultField.stringValue = "Считаю..."
+        rateField.stringValue = ""
+    }
+
+    func showScanning() {
+        convertButton.isEnabled = false
+        scanButton.isEnabled = false
+        resultField.stringValue = "Ищу цену на странице..."
+        rateField.stringValue = ""
+    }
+
+    func showResult(_ result: CurrencyConversionResult) {
+        convertButton.isEnabled = true
+        scanButton.isEnabled = true
+        resultField.stringValue = "\(CurrencyDisplay.amount(result.amount, code: result.source)) = \(CurrencyDisplay.amount(result.convertedAmount, code: result.target))"
+        var details = "Курс: 1 \(result.source.rawValue) = \(CurrencyDisplay.rate(result.rate)) \(result.target.rawValue)"
+        if let updatedAt = result.updatedAt {
+            details += "\nОбновлено: \(updatedAt)"
+        }
+        rateField.stringValue = details
+    }
+
+    func showError(_ message: String) {
+        convertButton.isEnabled = true
+        scanButton.isEnabled = true
+        resultField.stringValue = message
+        rateField.stringValue = ""
+    }
+
+    @objc private func convert(_ sender: Any?) {
+        guard let amount = CurrencyAmountParser.number(from: amountField.stringValue) else {
+            showError("Введите сумму в формате 129,99 или 129.99.")
+            return
+        }
+
+        let source = selectedCurrency(in: sourcePopup)
+        let target = selectedCurrency(in: targetPopup)
+        onConvert?(CurrencyConversionRequest(amount: amount, source: source, target: target))
+    }
+
+    @objc private func scanPage(_ sender: Any?) {
+        onScanPage?()
+    }
+
+    @objc private func swapCurrencies(_ sender: Any?) {
+        let source = selectedCurrency(in: sourcePopup)
+        let target = selectedCurrency(in: targetPopup)
+        select(target, in: sourcePopup)
+        select(source, in: targetPopup)
+    }
+
+    private func labeledControl(title: String, control: NSView) -> NSView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .width
+        stack.spacing = 6
+
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 11, weight: .bold)
+        label.textColor = .secondaryLabelColor
+
+        stack.addArrangedSubview(label)
+        stack.addArrangedSubview(control)
+        return stack
+    }
+
+    private func select(_ code: CurrencyCode, in popup: NSPopUpButton) {
+        if let index = CurrencyCode.allCases.firstIndex(of: code) {
+            popup.selectItem(at: index)
+        }
+    }
+
+    private func selectedCurrency(in popup: NSPopUpButton) -> CurrencyCode {
+        let index = popup.indexOfSelectedItem
+        guard CurrencyCode.allCases.indices.contains(index) else {
+            return .usd
+        }
+
+        return CurrencyCode.allCases[index]
+    }
+}
+
+private enum CurrencyDisplay {
+    static func plainAmount(_ amount: Double) -> String {
+        plainFormatter.string(from: NSNumber(value: amount)) ?? "\(amount)"
+    }
+
+    static func amount(_ amount: Double, code: CurrencyCode) -> String {
+        "\(plainAmount(amount)) \(code.rawValue)"
+    }
+
+    static func rate(_ amount: Double) -> String {
+        rateFormatter.string(from: NSNumber(value: amount)) ?? "\(amount)"
+    }
+
+    private static let plainFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale.current
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 2
+        return formatter
+    }()
+
+    private static let rateFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.locale = Locale.current
+        formatter.numberStyle = .decimal
+        formatter.minimumFractionDigits = 0
+        formatter.maximumFractionDigits = 6
+        return formatter
+    }()
 }
 
 private final class FlippedStackView: NSStackView {
@@ -3393,8 +5191,44 @@ private final class IconButton: NSButton {
     }
 }
 
+private final class ToolbarActionButton: NSButton {
+    init(symbolName: String, title: String, tooltip: String, width: CGFloat, height: CGFloat = 30) {
+        super.init(frame: .zero)
+
+        translatesAutoresizingMaskIntoConstraints = false
+        self.title = title
+        image = NSImage(systemSymbolName: symbolName, accessibilityDescription: tooltip)
+        imagePosition = .imageLeading
+        bezelStyle = .texturedRounded
+        isBordered = true
+        font = .systemFont(ofSize: 12, weight: .semibold)
+        toolTip = tooltip
+        setButtonType(.momentaryPushIn)
+
+        NSLayoutConstraint.activate([
+            widthAnchor.constraint(equalToConstant: width),
+            heightAnchor.constraint(equalToConstant: height)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+}
+
 private enum URLParser {
-    static func url(from input: String, searchEngine: SearchEngine) -> URL? {
+    static func url(from input: String, searchEngine: SearchEngine, region: SearchRegion, language: SearchLanguage) -> URL? {
+        let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        if let directURL = directURL(from: trimmed) {
+            return directURL
+        }
+
+        return searchEngine.searchURL(for: trimmed, region: region, language: language)
+    }
+
+    static func directURL(from input: String) -> URL? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
@@ -3416,7 +5250,7 @@ private enum URLParser {
             return URL(string: "\(defaultScheme(for: trimmed))://\(trimmed)")
         }
 
-        return searchEngine.searchURL(for: trimmed)
+        return nil
     }
 
     private static func looksLikeHost(_ text: String) -> Bool {
@@ -3783,12 +5617,30 @@ private enum ParserPage {
 }
 
 private enum HomePage {
-    static func html(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode) -> String {
+    static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry]) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
+        let region = searchRegion.title.htmlEscaped
+        let language = searchLanguage.title.htmlEscaped
         let engineOptions = SearchEngine.allCases.map { option in
             let selected = option == searchEngine ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let regionOptions = SearchRegion.allCases.map { option in
+            let selected = option == searchRegion ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let languageOptions = SearchLanguage.allCases.map { option in
+            let selected = option == searchLanguage ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let recentMarkup = recentHistory.prefix(6).map { entry in
+            """
+            <a href="\(entry.url.htmlEscaped)">
+              <strong>\(entry.title.htmlEscaped)</strong>
+              <span>\(entry.url.htmlEscaped)</span>
+            </a>
+            """
         }.joined()
 
         return """
@@ -3826,8 +5678,8 @@ private enum HomePage {
               color: var(--text);
               background: var(--home-bg);
               display: grid;
-              place-items: center;
-              overflow: hidden;
+              align-items: center;
+              overflow: auto;
             }
             body::before {
               content: "";
@@ -3845,23 +5697,22 @@ private enum HomePage {
               gap: var(--gap);
               position: relative;
               z-index: 1;
+              margin: 42px auto;
             }
             .mast {
               display: grid;
-              gap: 12px;
-              text-align: center;
+              gap: 10px;
             }
             h1 {
               margin: 0;
-              font-size: clamp(54px, 9vw, 108px);
-              line-height: 0.94;
+              font-size: clamp(44px, 7vw, 86px);
+              line-height: 0.96;
               letter-spacing: 0;
               font-weight: 800;
             }
             .line {
-              width: min(360px, 60vw);
+              width: min(320px, 44vw);
               height: 3px;
-              margin: 0 auto;
               border-radius: 999px;
               background: linear-gradient(90deg, var(--accent), var(--accent-2));
             }
@@ -3873,7 +5724,7 @@ private enum HomePage {
             }
             .search {
               display: grid;
-              grid-template-columns: minmax(180px, 1fr) 176px auto;
+              grid-template-columns: minmax(240px, 1fr) auto;
               gap: 10px;
               padding: 12px;
               background: var(--panel);
@@ -3916,12 +5767,20 @@ private enum HomePage {
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
               cursor: pointer;
             }
+            .tools {
+              display: grid;
+              grid-template-columns: repeat(3, minmax(0, 1fr));
+              gap: 10px;
+              margin-top: -8px;
+            }
             .quick {
               display: grid;
               grid-template-columns: repeat(4, minmax(0, 1fr));
               gap: 10px;
             }
-            .quick a {
+            .quick a,
+            .recent a,
+            .action a {
               color: var(--text);
               text-decoration: none;
               padding: 14px 15px;
@@ -3930,15 +5789,64 @@ private enum HomePage {
               background: color-mix(in srgb, var(--panel) 74%, transparent);
               font-size: 14px;
               font-weight: 650;
-              text-align: center;
             }
-            .engine {
+            .quick a { text-align: center; }
+            .context {
               color: var(--muted);
               font-size: 13px;
-              text-align: center;
+            }
+            .grid {
+              display: grid;
+              grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+              gap: 14px;
+            }
+            .panel {
+              display: grid;
+              gap: 10px;
+              padding: 14px;
+              border: 1px solid var(--line);
+              border-radius: calc(var(--radius) + 2px);
+              background: color-mix(in srgb, var(--panel) 82%, transparent);
+              box-shadow: 0 16px 42px var(--shadow);
+            }
+            .panel h2 {
+              margin: 0;
+              font-size: 15px;
+              line-height: 1.2;
+            }
+            .recent {
+              display: grid;
+              gap: 8px;
+            }
+            .recent a {
+              display: grid;
+              gap: 4px;
+              padding: 12px;
+            }
+            .recent span {
+              min-width: 0;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+              color: var(--muted);
+              font-size: 12px;
+            }
+            .action {
+              display: grid;
+              gap: 8px;
+            }
+            .action a {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            }
+            @media (max-width: 960px) {
+              .grid { grid-template-columns: 1fr; }
+              .tools { grid-template-columns: 1fr; }
             }
             @media (max-width: 680px) {
               .search { grid-template-columns: 1fr; }
+              input, button { grid-column: auto; }
               select { height: 46px; }
               button { height: 46px; }
               .quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -3950,35 +5858,77 @@ private enum HomePage {
             <section class="mast" aria-label="NorthStar">
               <h1>\(appName)</h1>
               <div class="line"></div>
-              <p class="sub">Ищите, открывайте сайты или начинайте с привычных мест.</p>
+              <p class="sub">Поиск, сайты, быстрый старт и недавние страницы в одном месте.</p>
             </section>
             <form class="search" id="searchForm">
               <input id="query" name="q" autofocus autocomplete="off" placeholder="Поиск или адрес сайта">
+              <button type="submit">Открыть</button>
+            </form>
+            <div class="tools" aria-label="Настройки поиска">
+              <select id="region" name="region" aria-label="Регион поиска">
+                \(regionOptions)
+              </select>
+              <select id="language" name="language" aria-label="Язык поиска">
+                \(languageOptions)
+              </select>
               <select id="engine" name="engine" aria-label="Поисковая система">
                 \(engineOptions)
               </select>
-              <button type="submit">Открыть</button>
-            </form>
-            <div class="engine">Текущая поисковая система: \(engine)</div>
-            <nav class="quick" aria-label="Быстрые ссылки">
-              <a href="https://github.com">GitHub</a>
-              <a href="https://news.ycombinator.com">Hacker News</a>
-              <a href="https://developer.apple.com">Apple Dev</a>
-              <a href="http://localhost:3000">Локальный сервер</a>
-            </nav>
+            </div>
+            <div class="context">Поиск: \(engine) · \(region) · \(language)</div>
+            <section class="grid" aria-label="Быстрый старт">
+              <div class="panel">
+                <h2>Быстрые ссылки</h2>
+                <nav class="quick" aria-label="Быстрые ссылки">
+                  <a href="https://github.com">GitHub</a>
+                  <a href="https://news.ycombinator.com">Hacker News</a>
+                  <a href="https://developer.apple.com">Apple Dev</a>
+                  <a href="http://localhost:3000">Localhost</a>
+                </nav>
+              </div>
+              <div class="panel">
+                <h2>Действия</h2>
+                <div class="action">
+                  <a href="\(northStarSettingsScheme)://home">Настройки <span>→</span></a>
+                  <a href="https://mediamarkt.pl">MediaMarkt PL <span>→</span></a>
+                </div>
+              </div>
+              <div class="panel">
+                <h2>Недавние страницы</h2>
+                <div class="recent">
+                  \(recentMarkup.isEmpty ? "<p class=\"context\">История пока пуста.</p>" : recentMarkup)
+                </div>
+              </div>
+            </section>
           </main>
           <script>
             const form = document.getElementById("searchForm");
             const query = document.getElementById("query");
             const engine = document.getElementById("engine");
-            engine.addEventListener("change", () => {
-              window.location.href = "\(northStarSearchScheme)://engine?engine=" + encodeURIComponent(engine.value);
+            const region = document.getElementById("region");
+            const language = document.getElementById("language");
+            const updateContext = () => {
+              const params = new URLSearchParams({
+                engine: engine.value,
+                region: region.value,
+                language: language.value
+              });
+              window.location.href = "\(northStarSearchScheme)://engine?" + params.toString();
+            };
+            [engine, region, language].forEach(control => {
+              control.addEventListener("change", updateContext);
             });
             form.addEventListener("submit", event => {
               event.preventDefault();
               const value = query.value.trim();
               if (!value) return;
-              window.location.href = "\(northStarSearchScheme)://search?q=" + encodeURIComponent(value) + "&engine=" + encodeURIComponent(engine.value);
+              const params = new URLSearchParams({
+                q: value,
+                engine: engine.value,
+                region: region.value,
+                language: language.value
+              });
+              window.location.href = "\(northStarSearchScheme)://search?" + params.toString();
             });
           </script>
         </body>
@@ -3987,11 +5937,93 @@ private enum HomePage {
     }
 }
 
+private enum SettingsSection: String, CaseIterable {
+    case overview
+    case search
+    case appearance
+    case browser
+    case currency
+    case performance
+    case history
+    case downloads
+
+    var identifier: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .overview:
+            return "Обзор"
+        case .search:
+            return "Поиск"
+        case .appearance:
+            return "Внешний вид"
+        case .browser:
+            return "Браузер"
+        case .currency:
+            return "Валюты"
+        case .performance:
+            return "Производительность"
+        case .history:
+            return "История"
+        case .downloads:
+            return "Загрузки"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .overview:
+            return "Короткая сводка"
+        case .search:
+            return "Движок, регион и язык"
+        case .appearance:
+            return "Тема, цвета и главный экран"
+        case .browser:
+            return "Вкладки и блокировка рекламы"
+        case .currency:
+            return "Курс и конвертация"
+        case .performance:
+            return "Состояние текущего окна"
+        case .history:
+            return "Посещённые страницы"
+        case .downloads:
+            return "Сохранённые файлы"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let section = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = section
+    }
+}
+
 private enum SettingsPage {
-    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode) -> String {
+    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection) -> String {
         let palette = HomePalette(theme: theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        let activeSectionID = activeSection.identifier.htmlEscaped
+        let navMarkup = SettingsSection.allCases.map { section in
+            let active = section == activeSection ? " active" : ""
+            return """
+            <button class="nav-item\(active)" type="button" data-section="\(section.identifier.htmlEscaped)">
+              <strong>\(section.title.htmlEscaped)</strong>
+              <span>\(section.subtitle.htmlEscaped)</span>
+            </button>
+            """
+        }.joined()
         let searchOptions = SearchEngine.allCases.map { option in
             let selected = option == preferences.searchEngine ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let regionOptions = SearchRegion.allCases.map { option in
+            let selected = option == preferences.searchRegion ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let languageOptions = SearchLanguage.allCases.map { option in
+            let selected = option == preferences.searchLanguage ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
         }.joined()
         let tabOptions = TabPlacement.allCases.map { option in
@@ -4013,6 +6045,18 @@ private enum SettingsPage {
         let homeOptions = HomeBackgroundMode.allCases.map { option in
             let selected = option == preferences.homeBackground ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let adBlockOptions = AdBlockMode.allCases.map { option in
+            let selected = option == preferences.adBlockMode ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let currencySourceOptions = CurrencyCode.allCases.map { option in
+            let selected = option == preferences.defaultCurrencySource ? " selected" : ""
+            return "<option value=\"\(option.rawValue)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let currencyTargetOptions = CurrencyCode.allCases.map { option in
+            let selected = option == preferences.defaultCurrencyTarget ? " selected" : ""
+            return "<option value=\"\(option.rawValue)\"\(selected)>\(option.title.htmlEscaped)</option>"
         }.joined()
 
         let historyMarkup = history.prefix(60).map { entry in
@@ -4086,16 +6130,84 @@ private enum SettingsPage {
               min-height: 100vh;
               font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
               color: var(--text);
-              background: linear-gradient(120deg, var(--bg), var(--panel-strong));
+              background: var(--bg);
             }
-            main {
-              width: min(var(--settings-width), calc(100vw - 56px));
-              margin: 0 auto;
-              padding: 40px 0 56px;
+            .settings-shell {
+              min-height: 100vh;
               display: grid;
-              gap: var(--gap);
+              grid-template-columns: 260px minmax(0, 1fr);
             }
-            header {
+            .sidebar {
+              position: sticky;
+              top: 0;
+              height: 100vh;
+              display: grid;
+              align-content: start;
+              gap: 20px;
+              border-right: 1px solid var(--line);
+              background: color-mix(in srgb, var(--panel-strong) 82%, var(--bg));
+              padding: 22px 14px;
+            }
+            .brand {
+              display: grid;
+              gap: 4px;
+              padding: 0 10px 4px;
+            }
+            .brand strong {
+              font-size: 20px;
+              line-height: 1;
+            }
+            .brand span,
+            .nav-item span,
+            .muted {
+              color: var(--muted);
+              font-size: 13px;
+            }
+            .nav {
+              display: grid;
+              gap: 4px;
+            }
+            .nav-item,
+            .overview-card {
+              appearance: none;
+              width: 100%;
+              border: 1px solid transparent;
+              border-radius: var(--radius);
+              background: transparent;
+              color: var(--text);
+              text-align: left;
+              cursor: pointer;
+            }
+            .nav-item {
+              display: grid;
+              gap: 4px;
+              padding: 10px 11px;
+            }
+            .nav-item strong {
+              font-size: 14px;
+              line-height: 1.15;
+            }
+            .nav-item.active,
+            .nav-item:hover {
+              border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
+              background: color-mix(in srgb, var(--accent) 12%, transparent);
+            }
+            .content {
+              min-width: 0;
+              max-height: 100vh;
+              overflow: auto;
+              padding: 34px;
+            }
+            .panel {
+              width: min(var(--settings-width), 100%);
+              display: none;
+              gap: 18px;
+              margin: 0 auto;
+            }
+            .panel.active {
+              display: grid;
+            }
+            .panel-head {
               display: flex;
               justify-content: space-between;
               gap: 18px;
@@ -4103,16 +6215,47 @@ private enum SettingsPage {
               border-bottom: 1px solid var(--line);
               padding-bottom: 18px;
             }
-            h1, h2 { margin: 0; letter-spacing: 0; }
-            h1 { font-size: 38px; line-height: 1; }
-            h2 { font-size: 19px; }
-            .muted { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
-            .settings-grid {
+            h1, h2, h3, p { margin: 0; letter-spacing: 0; }
+            h1 { font-size: 34px; line-height: 1.05; }
+            h2 { font-size: 21px; line-height: 1.15; }
+            h3 { font-size: 15px; line-height: 1.2; }
+            .overview-grid,
+            .control-grid {
               display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+              grid-template-columns: repeat(2, minmax(0, 1fr));
               gap: 12px;
             }
-            label, .section-head {
+            .overview-card,
+            .setting-card,
+            .metric,
+            .list-row {
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+              background: var(--panel);
+              box-shadow: 0 14px 34px var(--shadow);
+            }
+            .overview-card {
+              min-height: 96px;
+              display: grid;
+              align-content: center;
+              gap: 7px;
+              padding: 16px;
+            }
+            .overview-card:hover {
+              border-color: color-mix(in srgb, var(--accent) 55%, var(--line));
+            }
+            .overview-card span {
+              color: var(--muted);
+              font-size: 13px;
+            }
+            .setting-card {
+              min-height: 92px;
+              display: grid;
+              align-content: center;
+              gap: 10px;
+              padding: 15px;
+            }
+            label {
               display: grid;
               gap: 8px;
             }
@@ -4122,7 +6265,8 @@ private enum SettingsPage {
               font-weight: 700;
               text-transform: uppercase;
             }
-            select {
+            select,
+            input {
               width: 100%;
               min-width: 0;
               min-height: 38px;
@@ -4134,13 +6278,27 @@ private enum SettingsPage {
               font-size: 14px;
               font-weight: 650;
             }
-            section {
+            .metric-grid {
               display: grid;
-              gap: 12px;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 10px;
             }
-            .section-head {
-              grid-template-columns: minmax(0, 1fr) auto;
-              align-items: center;
+            .metric {
+              min-height: 86px;
+              display: grid;
+              align-content: center;
+              gap: 8px;
+              padding: 14px;
+            }
+            .metric span {
+              color: var(--muted);
+              font-size: 12px;
+              font-weight: 700;
+              text-transform: uppercase;
+            }
+            .metric strong {
+              font-size: 22px;
+              line-height: 1;
             }
             .list {
               display: grid;
@@ -4154,11 +6312,7 @@ private enum SettingsPage {
               align-items: center;
               color: var(--text);
               text-decoration: none;
-              border: 1px solid var(--line);
-              border-radius: var(--radius);
-              background: var(--panel);
               padding: 12px 14px;
-              box-shadow: 0 14px 34px var(--shadow);
             }
             .list-row:hover {
               border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
@@ -4206,32 +6360,6 @@ private enum SettingsPage {
             }
             .failed { background: rgba(255, 88, 88, 0.16); }
             .inProgress { background: rgba(125, 184, 255, 0.18); }
-            .metric-grid {
-              display: grid;
-              grid-template-columns: repeat(4, minmax(0, 1fr));
-              gap: 10px;
-            }
-            .metric {
-              min-height: 86px;
-              display: grid;
-              align-content: center;
-              gap: 8px;
-              border: 1px solid var(--line);
-              border-radius: var(--radius);
-              background: var(--panel);
-              padding: 14px;
-              box-shadow: 0 14px 34px var(--shadow);
-            }
-            .metric span {
-              color: var(--muted);
-              font-size: 12px;
-              font-weight: 700;
-              text-transform: uppercase;
-            }
-            .metric strong {
-              font-size: 22px;
-              line-height: 1;
-            }
             .row-meta {
               display: grid;
               gap: 5px;
@@ -4240,110 +6368,273 @@ private enum SettingsPage {
             .duration {
               font-size: 13px;
             }
-            @media (max-width: 760px) {
-              main { width: min(100vw - 28px, 1120px); padding-top: 26px; }
-              header, .section-head, .list-row { grid-template-columns: 1fr; }
-              header { align-items: start; }
-              .settings-grid { grid-template-columns: 1fr; }
+            @media (max-width: 860px) {
+              .settings-shell { grid-template-columns: 1fr; }
+              .sidebar {
+                position: static;
+                height: auto;
+                border-right: 0;
+                border-bottom: 1px solid var(--line);
+                padding: 16px;
+              }
+              .nav {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+              }
+              .content {
+                max-height: none;
+                overflow: visible;
+                padding: 22px 16px 34px;
+              }
+              .panel-head, .list-row { grid-template-columns: 1fr; }
+              .panel-head { align-items: start; }
+              .overview-grid, .control-grid { grid-template-columns: 1fr; }
               .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
               time, .status, .row-meta { justify-self: start; justify-items: start; }
             }
           </style>
         </head>
         <body>
-          <main>
-            <header>
-              <div>
-                <h1>\(settingsTitle)</h1>
-                <p class="muted">Минимальные параметры, цветовые схемы, история, загрузки и состояние браузера.</p>
+          <main class="settings-shell">
+            <aside class="sidebar" aria-label="Разделы настроек">
+              <div class="brand">
+                <strong>\(settingsTitle)</strong>
+                <span>\(appName)</span>
               </div>
-              <a class="button" href="\(northStarSettingsScheme)://clear-history">Очистить историю</a>
-            </header>
+              <nav class="nav">
+                \(navMarkup)
+              </nav>
+            </aside>
 
-            <section class="settings-grid" aria-label="Минимальные настройки">
-              <label>
-                <span>Поиск</span>
-                <select id="search">\(searchOptions)</select>
-              </label>
-              <label>
-                <span>Вкладки</span>
-                <select id="tabs">\(tabOptions)</select>
-              </label>
-              <label>
-                <span>Тема</span>
-                <select id="theme">\(themeOptions)</select>
-              </label>
-              <label>
-                <span>Цветовая схема</span>
-                <select id="scheme">\(schemeOptions)</select>
-              </label>
-              <label>
-                <span>Дизайн</span>
-                <select id="design">\(designOptions)</select>
-              </label>
-              <label>
-                <span>Главный экран</span>
-                <select id="home">\(homeOptions)</select>
-              </label>
-            </section>
-
-            <section aria-label="Производительность">
-              <div class="section-head">
-                <div>
-                  <h2>Производительность</h2>
-                  <p class="muted">Лёгкий мониторинг текущего окна и последних загрузок.</p>
+            <div class="content">
+              <section class="panel" data-panel="overview" aria-label="Обзор настроек">
+                <div class="panel-head">
+                  <div>
+                    <h1>Обзор</h1>
+                    <p class="muted">\(preferences.searchEngine.title.htmlEscaped) · \(preferences.searchRegion.title.htmlEscaped) · \(preferences.searchLanguage.title.htmlEscaped)</p>
+                  </div>
                 </div>
-              </div>
-              <div class="metric-grid">
-                <div class="metric"><span>Вкладки</span><strong>\(performance.activeTabs)</strong></div>
-                <div class="metric"><span>Загружается</span><strong>\(performance.loadingTabs)</strong></div>
-                <div class="metric"><span>Память</span><strong>\(PerformanceDisplay.memory(performance.residentMemoryMegabytes).htmlEscaped)</strong></div>
-                <div class="metric"><span>Средняя загрузка</span><strong>\(PerformanceDisplay.duration(performance.averageDuration).htmlEscaped)</strong></div>
-              </div>
-              <div class="list">
-                \(performanceMarkup.isEmpty ? "<p class=\"empty\">Данных о загрузках пока нет.</p>" : performanceMarkup)
-              </div>
-            </section>
-
-            <section aria-label="История посещений">
-              <div class="section-head">
-                <div>
-                  <h2>История посещений</h2>
-                  <p class="muted">Последние открытые страницы.</p>
+                <div class="overview-grid">
+                  <button class="overview-card" type="button" data-section="search">
+                    <h3>Поиск</h3>
+                    <span>\(preferences.searchEngine.title.htmlEscaped), \(preferences.searchRegion.title.htmlEscaped), \(preferences.searchLanguage.title.htmlEscaped)</span>
+                  </button>
+                  <button class="overview-card" type="button" data-section="appearance">
+                    <h3>Внешний вид</h3>
+                    <span>\(preferences.theme.title.htmlEscaped), \(preferences.colorScheme.title.htmlEscaped), \(preferences.design.title.htmlEscaped)</span>
+                  </button>
+                  <button class="overview-card" type="button" data-section="currency">
+                    <h3>Валюты</h3>
+                    <span>\(preferences.defaultCurrencySource.rawValue) → \(preferences.defaultCurrencyTarget.rawValue), ключ скрыт</span>
+                  </button>
+                  <button class="overview-card" type="button" data-section="history">
+                    <h3>История</h3>
+                    <span>\(history.count) записей</span>
+                  </button>
+                  <button class="overview-card" type="button" data-section="downloads">
+                    <h3>Загрузки</h3>
+                    <span>\(downloads.count) записей</span>
+                  </button>
                 </div>
-                <a class="button" href="\(northStarSettingsScheme)://clear-history">Очистить</a>
-              </div>
-              <div class="list">
-                \(historyMarkup.isEmpty ? "<p class=\"empty\">История пока пуста.</p>" : historyMarkup)
-              </div>
-            </section>
+              </section>
 
-            <section aria-label="История загрузок">
-              <div class="section-head">
-                <div>
-                  <h2>История загрузок</h2>
-                  <p class="muted">Файлы сохраняются в папку Загрузки.</p>
+              <section class="panel" data-panel="search" aria-label="Поиск">
+                <div class="panel-head">
+                  <div>
+                    <h1>Поиск</h1>
+                    <p class="muted">Поисковая система, регион выдачи и язык результатов.</p>
+                  </div>
                 </div>
-                <a class="button" href="\(northStarSettingsScheme)://clear-downloads">Очистить</a>
-              </div>
-              <div class="list">
-                \(downloadsMarkup.isEmpty ? "<p class=\"empty\">Загрузок пока нет.</p>" : downloadsMarkup)
-              </div>
-            </section>
+                <div class="control-grid">
+                  <div class="setting-card">
+                    <label>
+                      <span>Поисковая система</span>
+                      <select id="search" data-setting>\(searchOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <label>
+                      <span>Регион поиска</span>
+                      <select id="region" data-setting>\(regionOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <label>
+                      <span>Язык поиска</span>
+                      <select id="language" data-setting>\(languageOptions)</select>
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel" data-panel="appearance" aria-label="Внешний вид">
+                <div class="panel-head">
+                  <div>
+                    <h1>Внешний вид</h1>
+                    <p class="muted">Тема, цветовая схема, плотность интерфейса и фон главного экрана.</p>
+                  </div>
+                </div>
+                <div class="control-grid">
+                  <div class="setting-card">
+                    <label>
+                      <span>Тема</span>
+                      <select id="theme" data-setting>\(themeOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <label>
+                      <span>Цветовая схема</span>
+                      <select id="scheme" data-setting>\(schemeOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <label>
+                      <span>Дизайн</span>
+                      <select id="design" data-setting>\(designOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <label>
+                      <span>Главный экран</span>
+                      <select id="home" data-setting>\(homeOptions)</select>
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel" data-panel="browser" aria-label="Браузер">
+                <div class="panel-head">
+                  <div>
+                    <h1>Браузер</h1>
+                    <p class="muted">Расположение вкладок и режим блокировки рекламы.</p>
+                  </div>
+                </div>
+                <div class="control-grid">
+                  <div class="setting-card">
+                    <label>
+                      <span>Вкладки</span>
+                      <select id="tabs" data-setting>\(tabOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <label>
+                      <span>Блокировка рекламы</span>
+                      <select id="adblock" data-setting>\(adBlockOptions)</select>
+                    </label>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel" data-panel="currency" aria-label="Валюты">
+                <div class="panel-head">
+                  <div>
+                    <h1>Валюты</h1>
+                    <p class="muted">Конвертер в панели, сканирование цен на странице и пункт контекстного меню.</p>
+                  </div>
+                </div>
+                <div class="control-grid">
+                  <div class="setting-card">
+                    <label>
+                      <span>Валюта цены по умолчанию</span>
+                      <select id="currencySource" data-setting>\(currencySourceOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <label>
+                      <span>Конвертировать в</span>
+                      <select id="currencyTarget" data-setting>\(currencyTargetOptions)</select>
+                    </label>
+                  </div>
+                  <div class="setting-card">
+                    <h3>Источник курсов</h3>
+                    <p class="muted">ExchangeRate-API настроен локально и не показывается в интерфейсе.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section class="panel" data-panel="performance" aria-label="Производительность">
+                <div class="panel-head">
+                  <div>
+                    <h1>Производительность</h1>
+                    <p class="muted">Состояние текущего окна и последние загрузки страниц.</p>
+                  </div>
+                </div>
+                <div class="metric-grid">
+                  <div class="metric"><span>Вкладки</span><strong>\(performance.activeTabs)</strong></div>
+                  <div class="metric"><span>Загружается</span><strong>\(performance.loadingTabs)</strong></div>
+                  <div class="metric"><span>Память</span><strong>\(PerformanceDisplay.memory(performance.residentMemoryMegabytes).htmlEscaped)</strong></div>
+                  <div class="metric"><span>Средняя загрузка</span><strong>\(PerformanceDisplay.duration(performance.averageDuration).htmlEscaped)</strong></div>
+                </div>
+                <div class="list">
+                  \(performanceMarkup.isEmpty ? "<p class=\"empty\">Данных о загрузках пока нет.</p>" : performanceMarkup)
+                </div>
+              </section>
+
+              <section class="panel" data-panel="history" aria-label="История посещений">
+                <div class="panel-head">
+                  <div>
+                    <h1>История</h1>
+                    <p class="muted">Последние открытые страницы.</p>
+                  </div>
+                  <a class="button" href="\(northStarSettingsScheme)://clear-history">Очистить</a>
+                </div>
+                <div class="list">
+                  \(historyMarkup.isEmpty ? "<p class=\"empty\">История пока пуста.</p>" : historyMarkup)
+                </div>
+              </section>
+
+              <section class="panel" data-panel="downloads" aria-label="История загрузок">
+                <div class="panel-head">
+                  <div>
+                    <h1>Загрузки</h1>
+                    <p class="muted">Файлы сохраняются в папку Загрузки.</p>
+                  </div>
+                  <a class="button" href="\(northStarSettingsScheme)://clear-downloads">Очистить</a>
+                </div>
+                <div class="list">
+                  \(downloadsMarkup.isEmpty ? "<p class=\"empty\">Загрузок пока нет.</p>" : downloadsMarkup)
+                </div>
+              </section>
+            </div>
           </main>
           <script>
+            const fallbackSection = "\(activeSectionID)";
+            const panels = Array.from(document.querySelectorAll("[data-panel]"));
+            const sectionButtons = Array.from(document.querySelectorAll("[data-section]"));
+            const setSection = (section) => {
+              const target = panels.some(panel => panel.dataset.panel === section) ? section : fallbackSection;
+              panels.forEach(panel => panel.classList.toggle("active", panel.dataset.panel === target));
+              sectionButtons.forEach(button => button.classList.toggle("active", button.dataset.section === target));
+              if (window.location.hash !== "#" + target) {
+                history.replaceState(null, "", "#" + target);
+              }
+            };
+            sectionButtons.forEach(button => {
+              button.addEventListener("click", () => setSection(button.dataset.section));
+            });
+            setSection(window.location.hash.replace("#", "") || fallbackSection);
+
+            const currentSection = () => {
+              const active = document.querySelector("[data-panel].active");
+              return active ? active.dataset.panel : fallbackSection;
+            };
             const update = () => {
               const params = new URLSearchParams({
+                section: currentSection(),
                 search: document.getElementById("search").value,
+                region: document.getElementById("region").value,
+                language: document.getElementById("language").value,
                 tabs: document.getElementById("tabs").value,
                 theme: document.getElementById("theme").value,
                 scheme: document.getElementById("scheme").value,
                 design: document.getElementById("design").value,
-                home: document.getElementById("home").value
+                home: document.getElementById("home").value,
+                adblock: document.getElementById("adblock").value,
+                currencySource: document.getElementById("currencySource").value,
+                currencyTarget: document.getElementById("currencyTarget").value
               });
               window.location.href = "\(northStarSettingsScheme)://update?" + params.toString();
             };
-            document.querySelectorAll("select").forEach(select => {
+            document.querySelectorAll("[data-setting]").forEach(select => {
               select.addEventListener("change", update);
             });
           </script>
@@ -4425,6 +6716,12 @@ private extension NSColor {
 }
 
 private extension String {
+    func truncatedForSuggestion(maxLength: Int) -> String {
+        guard count > maxLength, maxLength > 1 else { return self }
+        let end = index(startIndex, offsetBy: maxLength - 1)
+        return String(self[..<end]) + "…"
+    }
+
     var htmlEscaped: String {
         replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
@@ -4458,6 +6755,8 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     let newWindow = fileMenu.addItem(withTitle: "Новое окно", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
     newWindow.target = appDelegate
     fileMenu.addItem(withTitle: "Новая вкладка", action: #selector(BrowserViewController.newTabCommand(_:)), keyEquivalent: "t")
+    let privateTab = fileMenu.addItem(withTitle: "Новая приватная вкладка", action: #selector(BrowserViewController.newPrivateTabCommand(_:)), keyEquivalent: "n")
+    privateTab.keyEquivalentModifierMask = [.command, .shift]
     fileMenu.addItem(withTitle: "Закрыть вкладку", action: #selector(BrowserViewController.closeTabCommand(_:)), keyEquivalent: "w")
     let closeWindow = fileMenu.addItem(withTitle: "Закрыть окно", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
     closeWindow.keyEquivalentModifierMask = [.command, .shift]
@@ -4481,12 +6780,16 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     viewMenu.addItem(withTitle: "Назад", action: #selector(BrowserViewController.goBackCommand(_:)), keyEquivalent: "[")
     viewMenu.addItem(withTitle: "Вперёд", action: #selector(BrowserViewController.goForwardCommand(_:)), keyEquivalent: "]")
     viewMenu.addItem(withTitle: "Обновить", action: #selector(BrowserViewController.reloadCommand(_:)), keyEquivalent: "r")
+    let hardReloadItem = viewMenu.addItem(withTitle: "Жёсткое обновление без кэша", action: #selector(BrowserViewController.hardReloadCommand(_:)), keyEquivalent: "r")
+    hardReloadItem.keyEquivalentModifierMask = [.command, .shift]
     viewMenu.addItem(.separator())
     viewMenu.addItem(withTitle: "Предыдущая вкладка", action: #selector(BrowserViewController.previousTabCommand(_:)), keyEquivalent: "{")
     viewMenu.addItem(withTitle: "Следующая вкладка", action: #selector(BrowserViewController.nextTabCommand(_:)), keyEquivalent: "}")
     viewMenu.addItem(.separator())
     let parserItem = viewMenu.addItem(withTitle: "Парсер страницы", action: #selector(BrowserViewController.openParserCommand(_:)), keyEquivalent: "p")
     parserItem.keyEquivalentModifierMask = [.command, .option]
+    let screenshotItem = viewMenu.addItem(withTitle: "Скопировать скриншот вкладки", action: #selector(BrowserViewController.screenshotTabCommand(_:)), keyEquivalent: "s")
+    screenshotItem.keyEquivalentModifierMask = [.command, .option]
     viewMenu.addItem(.separator())
     viewMenu.addItem(withTitle: "Фокус на адрес", action: #selector(BrowserViewController.focusLocation(_:)), keyEquivalent: "l")
     viewItem.submenu = viewMenu

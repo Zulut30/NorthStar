@@ -13,26 +13,32 @@
 
 NorthStar is a small native macOS browser built with Swift, AppKit, and Apple's WebKit. It is meant to be fast to understand, easy to extend, and useful as a foundation for experimenting with browser UX, private sessions, proxy-backed browsing, and local development workflows.
 
-The first version keeps the surface intentionally focused: one window, a polished Russian-language NorthStar home screen, movable tabs, a smart address bar, browser navigation controls, a settings tab, theme and color-scheme selection, browser design density, search engine selection, history, download history, lightweight performance monitoring, and a per-tab network selector.
+The first version keeps the surface intentionally focused: one window, a polished Russian-language NorthStar home screen, movable tabs, a smart address bar, browser navigation controls, labeled toolbar actions, a settings tab, theme and color-scheme selection, browser design density, search engine, region, and language selection, history, download history, lightweight performance monitoring, and private browsing.
 
 ## Highlights
 
 - Native macOS app bundle, no Electron runtime.
+- Custom NorthStar app logo and macOS `.icns` icon.
 - `WKWebView` rendering with AppKit window and menu integration.
 - Thin Chrome-style tabs with active-state accents and configurable placement: left, top, right, or bottom.
-- NorthStar home screen with integrated search and quick links.
+- NorthStar home screen with integrated search, search filters, quick links, quick actions, and recent pages.
 - Smart address bar that accepts URLs, localhost addresses, file URLs, or search text.
-- Search engine picker in the toolbar, on the home screen, and in Settings.
+- Compact address bar suggestions for direct URLs, localized search, and matching browsing history.
+- Search engine, region, and language selection on the home screen and in Settings.
+- Search region and language controls for localized results, including Poland and Polish-language searches.
 - Built-in engines: DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
-- Settings open as a first-class internal tab instead of a modal sheet.
+- Settings open as a first-class internal tab with a browser-style sidebar.
 - Browsing history and download history are available from the Settings tab.
+- Private tabs are available from the toolbar or `Shift-Command-N` and avoid local history, download history, persistent cookies, and local performance URL samples.
+- Current-tab screenshots can be copied directly to the macOS clipboard from the toolbar.
+- Built-in currency converter using ExchangeRate-API, with toolbar access, visible-page price scanning, and right-click actions for selected prices.
 - Appearance controls include six color schemes, four interface designs, and five home-screen background styles.
 - Lightweight browser performance snapshot in Settings: tab count, loading tabs, app memory, average load time, and recent page timings.
-- Always-on ad blocking with WebKit content rules, host blocking, and DOM cleanup for injected ad containers.
-- Safari-like user agent to reduce search-engine bot challenges from custom WebKit fingerprints.
+- Ad blocking with a compatibility-first default mode, plus an optional strict mode for heavier cleanup.
+- Native WebKit user agent handling instead of a hand-written browser fingerprint.
 - Current-page parser report that extracts JSON, Markdown, visible text, links, headings, images, and bounded HTML from the already-loaded page.
 - Theme picker for System, Light, and Dark.
-- Per-tab network modes: System, Private, Tor SOCKS, and Localhost.
+- Network modes in code: System, Private, Tor SOCKS, and Localhost.
 - New-window handling opens links into a new NorthStar tab instead of losing context.
 - Build script that produces `Build/NorthStar.app`.
 
@@ -43,24 +49,30 @@ Open settings with `Command-,`, the gear button in the toolbar, or `northstar://
 | Setting | Options |
 | --- | --- |
 | Search engine | DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, Startpage |
+| Search region | Auto, Poland, USA, UK, Germany, France, Spain, Ukraine, Russia |
+| Search language | Auto, Polish, Russian, English, German, French, Spanish, Ukrainian |
 | Tabs position | Left, Top, Right, Bottom |
 | Theme | System, Light, Dark |
 | Color scheme | Aurora, Graphite, Ocean, Forest, Rose, Amber |
 | Design | Balanced, Compact, Spacious, Focus |
 | Home screen | Soft Gradient, Solid, Fine Grid, Glow, Glass |
+| Ad blocking | Compatible, Strict |
+| Currency conversion | Default source currency, default target currency |
 
-Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, color scheme, design density, home-screen background, and tab layout between launches.
+Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, search region, search language, theme, color scheme, design density, home-screen background, ad blocking mode, default currency conversion choices, and tab layout between launches.
 
-You can also switch the search engine directly from the toolbar or from the NorthStar home screen before running a search.
+You can also switch the search engine, search region, and search language from the NorthStar home screen before running a search.
 
-The Settings tab also includes browsing history, download history, quick clear actions for both lists, and a lightweight performance section for the current window.
+The Settings tab uses a sidebar with separate sections for search, appearance, browser behavior, currencies, performance, browsing history, and downloads. History and downloads have their own views with clear actions.
+
+The currency converter uses ExchangeRate-API's pair conversion endpoint. Use the toolbar converter for manual amounts, scan the visible page for a price, or select a price on a page, right-click, and choose `Конвертировать выделенную цену`; NorthStar will parse the amount and use your default target currency. The API key is stored locally outside the visible Settings UI.
 
 ## Network Modes
 
 | Mode | Behavior | Best for |
 | --- | --- | --- |
 | System | Uses the default macOS network path and persistent WebKit website data. | Everyday browsing and signed-in sessions. |
-| Private | Uses a non-persistent `WKWebsiteDataStore`. | Quick private sessions without keeping cookies/cache. |
+| Private | Uses a non-persistent `WKWebsiteDataStore` and skips local history, download history, and performance URL samples. | Quick private sessions without keeping cookies/cache or local browsing records. |
 | Tor SOCKS | Uses non-persistent data and routes WebKit traffic through `127.0.0.1:9050` with failover disabled. | Browsing through a local Tor/SOCKS5 service. |
 | Localhost | Uses non-persistent data and blocks navigation outside local files, `localhost`, `127.*`, `0.0.0.0`, and `::1`. | Web development and testing local apps. |
 
@@ -73,12 +85,15 @@ When a tab's network mode changes, NorthStar recreates that tab's `WKWebView` wi
 | Shortcut | Action |
 | --- | --- |
 | `Command-T` | New tab |
+| `Shift-Command-N` | New private tab |
 | `Command-W` | Close tab |
 | `Command-,` | Settings |
 | `Shift-Command-W` | Close window |
 | `Command-L` | Focus address bar |
 | `Command-R` | Reload or stop loading |
+| `Shift-Command-R` | Hard refresh without cache |
 | `Option-Command-P` | Open current-page parser report |
+| `Option-Command-S` | Copy current-tab screenshot |
 | `Command-[` | Back |
 | `Command-]` | Forward |
 | `Shift-Command-[` | Previous tab |
@@ -131,7 +146,9 @@ NorthStar/
 ├── README.md
 ├── Resources/
 │   ├── Info.plist
-│   └── NorthStarBanner.svg
+│   ├── NorthStar.icns
+│   ├── NorthStarBanner.svg
+│   └── NorthStarLogo.svg
 ├── Scripts/
 │   └── build-app.sh
 └── Sources/
@@ -166,7 +183,7 @@ Core pieces:
 - `PerformanceMonitor` records recent page load timings and snapshots current app memory only when settings are rendered.
 - `PageParser` extracts structured data from the active `WKWebView` DOM without crawling extra pages.
 - `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
-- `AdBlocker` installs WebKit content rules, blocks known ad hosts, and removes visible ad containers.
+- `AdBlocker` installs WebKit content rules, blocks known ad hosts, and keeps a compatibility mode that avoids stripping consent/security scripts.
 - `NetworkPolicy` blocks disallowed URLs in Localhost mode.
 
 ## Roadmap
@@ -175,7 +192,7 @@ Core pieces:
 - Find in page.
 - Per-site permissions.
 - Optional custom SOCKS/HTTP proxy settings.
-- App icon and signed release packaging.
+- Signed release packaging.
 
 ## Design References
 

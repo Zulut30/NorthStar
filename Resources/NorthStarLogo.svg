@@ -1,0 +1,46 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="background" x1="164" y1="92" x2="860" y2="932" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="0.52" stop-color="#0E2934"/>
+      <stop offset="1" stop-color="#07515A"/>
+    </linearGradient>
+    <linearGradient id="horizon" x1="204" y1="224" x2="820" y2="812" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8AE6FF" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#62F2B8" stop-opacity="0.08"/>
+    </linearGradient>
+    <linearGradient id="star" x1="512" y1="180" x2="512" y2="844" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="0.44" stop-color="#E8FBFF"/>
+      <stop offset="1" stop-color="#9EEBFF"/>
+    </linearGradient>
+    <linearGradient id="needle" x1="512" y1="252" x2="512" y2="772" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#6CEFC4"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+    <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="26" stdDeviation="28" flood-color="#020A10" flood-opacity="0.42"/>
+    </filter>
+  </defs>
+
+  <rect x="64" y="64" width="896" height="896" rx="212" fill="url(#background)"/>
+  <path d="M182 760C302 690 420 676 540 714C660 752 774 742 842 676V960H182V760Z" fill="#061017" opacity="0.46"/>
+  <path d="M512 150L604 382L856 512L604 642L512 874L420 642L168 512L420 382L512 150Z" fill="url(#horizon)" opacity="0.2"/>
+  <circle cx="512" cy="512" r="264" stroke="#B9F4FF" stroke-width="3" opacity="0.22"/>
+  <circle cx="512" cy="512" r="190" stroke="#B9F4FF" stroke-width="2" opacity="0.16"/>
+  <circle cx="512" cy="512" r="92" fill="#DDFBFF" opacity="0.36" filter="url(#glow)"/>
+
+  <g filter="url(#softShadow)">
+    <path d="M512 180L558 466L844 512L558 558L512 844L466 558L180 512L466 466L512 180Z" fill="url(#star)"/>
+    <path d="M512 268L540 484L756 512L540 540L512 756L484 540L268 512L484 484L512 268Z" fill="#0B202A" opacity="0.42"/>
+    <path d="M512 238L542 482L718 512L542 542L512 786L482 542L306 512L482 482L512 238Z" fill="url(#needle)"/>
+    <circle cx="512" cy="512" r="36" fill="#F8FEFF"/>
+    <circle cx="512" cy="512" r="14" fill="#0F2E39"/>
+  </g>
+
+  <path d="M328 706C388 752 452 774 512 774C572 774 636 752 696 706" stroke="#8AE6FF" stroke-width="18" stroke-linecap="round" opacity="0.42"/>
+  <path d="M286 322C350 268 426 240 512 240C598 240 674 268 738 322" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" opacity="0.12"/>
+</svg>
