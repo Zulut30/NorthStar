@@ -185,6 +185,9 @@ private final class BrowserViewController: NSViewController {
     private var privateDownloads: Set<ObjectIdentifier> = []
     private var activeAddressSuggestions: [AddressSuggestion] = []
     private var selectedAddressSuggestionIndex: Int?
+    private var suggestionFetchTask: Task<Void, Never>?
+    private var remoteSearchSuggestions: [String] = []
+    private var remoteSuggestionsQuery = ""
     private var defaultAppStatusMessage: String?
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
@@ -703,6 +706,44 @@ private final class BrowserViewController: NSViewController {
 
         renderAddressSuggestions()
         showAddressSuggestions()
+        scheduleRemoteSuggestions(for: trimmed)
+    }
+
+    private func scheduleRemoteSuggestions(for query: String) {
+        suggestionFetchTask?.cancel()
+
+        guard query.count >= 2, URLParser.directURL(from: query) == nil else {
+            remoteSearchSuggestions = []
+            remoteSuggestionsQuery = ""
+            return
+        }
+
+        suggestionFetchTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 160_000_000)
+            guard !Task.isCancelled else { return }
+
+            let phrases = await SearchSuggestionService.fetch(query: query)
+            guard !Task.isCancelled, let self else { return }
+
+            self.remoteSearchSuggestions = Array(phrases.prefix(3))
+            self.remoteSuggestionsQuery = query
+
+            guard self.isEditingAddress,
+                  self.addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines) == query,
+                  !self.remoteSearchSuggestions.isEmpty else {
+                return
+            }
+
+            let previousSelection = self.selectedAddressSuggestionIndex
+            self.activeAddressSuggestions = self.addressSuggestions(for: query)
+            if let previousSelection, self.activeAddressSuggestions.indices.contains(previousSelection) {
+                self.selectedAddressSuggestionIndex = previousSelection
+            } else {
+                self.selectedAddressSuggestionIndex = self.activeAddressSuggestions.isEmpty ? nil : 0
+            }
+            self.renderAddressSuggestions()
+            self.showAddressSuggestions()
+        }
     }
 
     private func addressSuggestions(for query: String) -> [AddressSuggestion] {
@@ -744,8 +785,32 @@ private final class BrowserViewController: NSViewController {
             )
         }
 
+        if remoteSuggestionsQuery.caseInsensitiveCompare(query) == .orderedSame {
+            for phrase in remoteSearchSuggestions {
+                guard phrase.caseInsensitiveCompare(query) != .orderedSame,
+                      let phraseURL = preferences.searchEngine.searchURL(
+                        for: phrase,
+                        region: preferences.searchRegion,
+                        language: preferences.searchLanguage
+                      ) else {
+                    continue
+                }
+
+                append(
+                    AddressSuggestion(
+                        title: phrase,
+                        detail: "Подсказка · \(preferences.searchEngine.title)",
+                        input: phrase,
+                        url: phraseURL,
+                        symbolName: "magnifyingglass",
+                        identity: "remote:\(phrase.lowercased())"
+                    )
+                )
+            }
+        }
+
         guard query.count >= 2 else {
-            return Array(suggestions.prefix(7))
+            return Array(suggestions.prefix(8))
         }
 
         for entry in BookmarkStore.shared.entries {
@@ -767,7 +832,7 @@ private final class BrowserViewController: NSViewController {
                 )
             )
 
-            if suggestions.count >= 4 {
+            if suggestions.count >= 6 {
                 break
             }
         }
@@ -791,19 +856,20 @@ private final class BrowserViewController: NSViewController {
                 )
             )
 
-            if suggestions.count >= 7 {
+            if suggestions.count >= 8 {
                 break
             }
         }
 
-        return Array(suggestions.prefix(7))
+        return Array(suggestions.prefix(8))
     }
 
     private func renderAddressSuggestions() {
         addressSuggestionViewController.update(
             suggestions: activeAddressSuggestions,
             selectedIndex: selectedAddressSuggestionIndex,
-            width: addressField.bounds.width
+            width: addressField.bounds.width,
+            query: addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         addressSuggestionPopover.contentSize = addressSuggestionViewController.preferredContentSize
     }
@@ -819,6 +885,7 @@ private final class BrowserViewController: NSViewController {
     }
 
     private func hideAddressSuggestions() {
+        suggestionFetchTask?.cancel()
         activeAddressSuggestions = []
         selectedAddressSuggestionIndex = nil
         addressSuggestionPopover.close()
@@ -2226,6 +2293,15 @@ extension BrowserViewController: NSSearchFieldDelegate {
             }
             loadTypedAddress(control)
             return true
+        case #selector(NSResponder.insertTab(_:)):
+            guard let index = selectedAddressSuggestionIndex,
+                  activeAddressSuggestions.indices.contains(index) else {
+                return false
+            }
+            addressField.stringValue = activeAddressSuggestions[index].input
+            addressField.currentEditor()?.moveToEndOfLine(nil)
+            updateAddressSuggestions()
+            return true
         case #selector(NSResponder.cancelOperation(_:)):
             hideAddressSuggestions()
             return true
@@ -2927,6 +3003,39 @@ private final class FaviconStore {
             return image
         } catch {
             return nil
+        }
+    }
+}
+
+/// Live search-phrase suggestions for the address bar (DuckDuckGo autocomplete API).
+private enum SearchSuggestionService {
+    static func fetch(query: String) async -> [String] {
+        var components = URLComponents(string: "https://duckduckgo.com/ac/")
+        components?.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "type", value: "list")
+        ]
+        guard let url = components?.url else { return [] }
+
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 3)
+        request.setValue(BrowserUserAgent.safari, forHTTPHeaderField: "User-Agent")
+
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                return []
+            }
+
+            guard let array = try JSONSerialization.jsonObject(with: data) as? [Any],
+                  array.count >= 2,
+                  let phrases = array[1] as? [String] else {
+                return []
+            }
+
+            return phrases
+        } catch {
+            return []
         }
     }
 }
@@ -5733,7 +5842,7 @@ private final class AddressSuggestionViewController: NSViewController {
         ])
     }
 
-    func update(suggestions: [AddressSuggestion], selectedIndex: Int?, width: CGFloat) {
+    func update(suggestions: [AddressSuggestion], selectedIndex: Int?, width: CGFloat, query: String = "") {
         let contentWidth = max(420, min(720, width))
         let rowWidth = max(1, contentWidth - horizontalInset * 2)
 
@@ -5744,7 +5853,7 @@ private final class AddressSuggestionViewController: NSViewController {
 
         for (index, suggestion) in suggestions.enumerated() {
             let row = AddressSuggestionRowView()
-            row.configure(suggestion: suggestion, isSelected: index == selectedIndex)
+            row.configure(suggestion: suggestion, isSelected: index == selectedIndex, query: query)
             row.onSelect = { [weak self, suggestion] in
                 self?.onSelect?(suggestion)
             }
@@ -5851,7 +5960,7 @@ private final class AddressSuggestionRowView: NSControl {
         nil
     }
 
-    func configure(suggestion: AddressSuggestion, isSelected: Bool) {
+    func configure(suggestion: AddressSuggestion, isSelected: Bool, query: String = "") {
         self.isSelected = isSelected
 
         if let favicon = suggestion.favicon {
@@ -5866,10 +5975,46 @@ private final class AddressSuggestionRowView: NSControl {
             iconContainer.layer?.borderWidth = 0
         }
 
-        titleField.stringValue = suggestion.title
-        detailField.stringValue = suggestion.detail
+        titleField.attributedStringValue = Self.highlightedText(
+            suggestion.title,
+            query: query,
+            font: .systemFont(ofSize: 13.5, weight: .semibold),
+            color: .labelColor,
+            lineBreakMode: .byTruncatingTail
+        )
+        detailField.attributedStringValue = Self.highlightedText(
+            suggestion.detail,
+            query: query,
+            font: .systemFont(ofSize: 12),
+            color: .secondaryLabelColor,
+            lineBreakMode: .byTruncatingMiddle
+        )
         returnHint.isHidden = !isSelected
         applyState()
+    }
+
+    private static func highlightedText(_ text: String, query: String, font: NSFont, color: NSColor, lineBreakMode: NSLineBreakMode) -> NSAttributedString {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = lineBreakMode
+
+        let attributed = NSMutableAttributedString(
+            string: text,
+            attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraphStyle]
+        )
+
+        guard !query.isEmpty,
+              let range = text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) else {
+            return attributed
+        }
+
+        attributed.addAttributes(
+            [
+                .foregroundColor: NSColor.controlAccentColor,
+                .font: NSFont.systemFont(ofSize: font.pointSize, weight: .bold)
+            ],
+            range: NSRange(range, in: text)
+        )
+        return attributed
     }
 
     override func updateTrackingAreas() {
