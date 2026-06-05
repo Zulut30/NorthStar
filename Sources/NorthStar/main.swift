@@ -162,6 +162,8 @@ private final class BrowserViewController: NSViewController {
     private let networkPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let progressIndicator = NSProgressIndicator()
 
+    private weak var screenshotEffectView: NSView?
+    private var screenshotSound: NSSound?
     private var placementConstraints: [NSLayoutConstraint] = []
     private var tabBarContentConstraints: [NSLayoutConstraint] = []
     private var tabStackCrossAxisConstraint: NSLayoutConstraint?
@@ -240,6 +242,7 @@ private final class BrowserViewController: NSViewController {
         configuration.rect = tab.webView.bounds
 
         screenshotButton.isEnabled = false
+        playScreenshotCaptureEffect()
         tab.webView.takeSnapshot(with: configuration) { [weak self] image, error in
             Task { @MainActor in
                 guard let self else { return }
@@ -1605,6 +1608,93 @@ private final class BrowserViewController: NSViewController {
         } else {
             alert.runModal()
         }
+    }
+
+    private func playScreenshotCaptureEffect() {
+        guard !webContainerView.bounds.isEmpty else {
+            playScreenshotSound()
+            return
+        }
+
+        screenshotEffectView?.removeFromSuperview()
+        playScreenshotSound()
+
+        let overlay = NSView(frame: webContainerView.bounds)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.wantsLayer = true
+        overlay.layer?.backgroundColor = NSColor.clear.cgColor
+        overlay.alphaValue = 0
+
+        let dimView = NSView(frame: overlay.bounds)
+        dimView.autoresizingMask = [.width, .height]
+        dimView.wantsLayer = true
+        dimView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.20).cgColor
+        dimView.alphaValue = 0
+
+        let flashView = NSView(frame: overlay.bounds)
+        flashView.autoresizingMask = [.width, .height]
+        flashView.wantsLayer = true
+        flashView.layer?.backgroundColor = NSColor.white.cgColor
+        flashView.alphaValue = 0
+
+        let ringSize = min(max(min(overlay.bounds.width, overlay.bounds.height) * 0.22, 96), 168)
+        let ringView = NSView(frame: NSRect(
+            x: overlay.bounds.midX - ringSize / 2,
+            y: overlay.bounds.midY - ringSize / 2,
+            width: ringSize,
+            height: ringSize
+        ))
+        ringView.autoresizingMask = []
+        ringView.wantsLayer = true
+        ringView.layer?.cornerRadius = ringSize / 2
+        ringView.layer?.borderWidth = 2
+        ringView.layer?.borderColor = NSColor.white.withAlphaComponent(0.90).cgColor
+        ringView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.10).cgColor
+        ringView.alphaValue = 0
+
+        overlay.addSubview(dimView)
+        overlay.addSubview(flashView)
+        overlay.addSubview(ringView)
+        webContainerView.addSubview(overlay, positioned: .above, relativeTo: nil)
+        screenshotEffectView = overlay
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.045
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            overlay.animator().alphaValue = 1
+            dimView.animator().alphaValue = 1
+            flashView.animator().alphaValue = 0.86
+            ringView.animator().alphaValue = 1
+        } completionHandler: {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.20
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                dimView.animator().alphaValue = 0
+                flashView.animator().alphaValue = 0
+                ringView.animator().alphaValue = 0
+            } completionHandler: {
+                overlay.removeFromSuperview()
+            }
+        }
+    }
+
+    private func playScreenshotSound() {
+        let soundURLs = [
+            URL(fileURLWithPath: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/begin_record.caf"),
+            URL(fileURLWithPath: "/System/Library/Components/CoreAudio.component/Contents/SharedSupport/SystemSounds/system/acknowledgment_sent.caf")
+        ]
+
+        for url in soundURLs where FileManager.default.fileExists(atPath: url.path) {
+            if let sound = NSSound(contentsOf: url, byReference: true) {
+                screenshotSound = sound
+                sound.volume = 0.78
+                sound.play()
+                return
+            }
+        }
+
+        screenshotSound = NSSound(named: NSSound.Name("Tink"))
+        screenshotSound?.play()
     }
 
     private func showCurrencyError(message: String) {
