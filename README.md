@@ -13,7 +13,7 @@
 
 NorthStar is a small native macOS browser built with Swift, AppKit, and Apple's WebKit. It is meant to be fast to understand, easy to extend, and useful as a foundation for experimenting with browser UX, private sessions, proxy-backed browsing, and local development workflows.
 
-The first version keeps the surface intentionally focused: one window, a polished Russian-language NorthStar home screen, movable tabs, a smart address bar, browser navigation controls, a settings tab, theme selection, search engine selection, history, download history, and a per-tab network selector.
+The first version keeps the surface intentionally focused: one window, a polished Russian-language NorthStar home screen, movable tabs, a smart address bar, browser navigation controls, a settings tab, theme and color-scheme selection, browser design density, search engine selection, history, download history, lightweight performance monitoring, and a per-tab network selector.
 
 ## Highlights
 
@@ -26,6 +26,8 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Built-in engines: DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
 - Settings open as a first-class internal tab instead of a modal sheet.
 - Browsing history and download history are available from the Settings tab.
+- Appearance controls include six color schemes and four interface designs.
+- Lightweight browser performance snapshot in Settings: tab count, loading tabs, app memory, average load time, and recent page timings.
 - Always-on ad blocking with WebKit content rules, host blocking, and DOM cleanup for injected ad containers.
 - Safari-like user agent to reduce search-engine bot challenges from custom WebKit fingerprints.
 - Theme picker for System, Light, and Dark.
@@ -42,12 +44,14 @@ Open settings with `Command-,`, the gear button in the toolbar, or `northstar://
 | Search engine | DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, Startpage |
 | Tabs position | Left, Top, Right, Bottom |
 | Theme | System, Light, Dark |
+| Color scheme | Aurora, Graphite, Ocean, Forest, Rose, Amber |
+| Design | Balanced, Compact, Spacious, Focus |
 
-Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, and tab layout between launches.
+Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, color scheme, design density, and tab layout between launches.
 
 You can also switch the search engine directly from the toolbar or from the NorthStar home screen before running a search.
 
-The Settings tab also includes browsing history, download history, and quick clear actions for both lists.
+The Settings tab also includes browsing history, download history, quick clear actions for both lists, and a lightweight performance section for the current window.
 
 ## Network Modes
 
@@ -156,6 +160,7 @@ Core pieces:
 - `BrowserTab` wraps a `WKWebView` and observes title, URL, progress, loading, and history state.
 - `AppPreferences` stores theme, search engine, and tab placement in `UserDefaults`.
 - `BrowserHistoryStore` and `DownloadHistoryStore` persist local history lists in `UserDefaults`.
+- `PerformanceMonitor` records recent page load timings and snapshots current app memory only when settings are rendered.
 - `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
 - `AdBlocker` installs WebKit content rules, blocks known ad hosts, and removes visible ad containers.
 - `NetworkPolicy` blocks disallowed URLs in Localhost mode.

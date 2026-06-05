@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Network
 import WebKit
 
@@ -114,6 +115,7 @@ private final class BrowserViewController: NSViewController {
     private var placementConstraints: [NSLayoutConstraint] = []
     private var tabBarContentConstraints: [NSLayoutConstraint] = []
     private var tabStackCrossAxisConstraint: NSLayoutConstraint?
+    private var toolbarHeightConstraint: NSLayoutConstraint?
     private var activeDownloads: [ObjectIdentifier: UUID] = [:]
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
@@ -348,11 +350,14 @@ private final class BrowserViewController: NSViewController {
             toolbarView.addSubview($0)
         }
 
+        let toolbarHeight = toolbarView.heightAnchor.constraint(equalToConstant: preferences.design.toolbarHeight)
+        toolbarHeightConstraint = toolbarHeight
+
         NSLayoutConstraint.activate([
             toolbarView.topAnchor.constraint(equalTo: browserContentView.topAnchor),
             toolbarView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
             toolbarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
-            toolbarView.heightAnchor.constraint(equalToConstant: 56),
+            toolbarHeight,
 
             webContainerView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
             webContainerView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
@@ -409,6 +414,7 @@ private final class BrowserViewController: NSViewController {
 
     private func applyPreferences(redrawHomeTabs: Bool) {
         preferences.theme.apply()
+        toolbarHeightConstraint?.constant = preferences.design.toolbarHeight
         applyChromeTheme()
         applyTabPlacement(preferences.tabPlacement)
 
@@ -422,7 +428,7 @@ private final class BrowserViewController: NSViewController {
     }
 
     private func applyChromeTheme() {
-        let colors = ChromePalette(theme: preferences.theme)
+        let colors = ChromePalette(theme: preferences.theme, colorScheme: preferences.colorScheme)
         view.layer?.backgroundColor = colors.window.cgColor
         browserContentView.layer?.backgroundColor = colors.window.cgColor
         webContainerView.layer?.backgroundColor = colors.webBackground.cgColor
@@ -439,7 +445,7 @@ private final class BrowserViewController: NSViewController {
                 tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
                 tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-                tabBarView.widthAnchor.constraint(equalToConstant: 288),
+                tabBarView.widthAnchor.constraint(equalToConstant: preferences.design.verticalTabBarWidth),
 
                 browserContentView.topAnchor.constraint(equalTo: view.topAnchor),
                 browserContentView.leadingAnchor.constraint(equalTo: tabBarView.trailingAnchor),
@@ -456,14 +462,14 @@ private final class BrowserViewController: NSViewController {
                 tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
                 tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-                tabBarView.widthAnchor.constraint(equalToConstant: 288)
+                tabBarView.widthAnchor.constraint(equalToConstant: preferences.design.verticalTabBarWidth)
             ]
         case .top:
             placementConstraints = [
                 tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
                 tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                tabBarView.heightAnchor.constraint(equalToConstant: 68),
+                tabBarView.heightAnchor.constraint(equalToConstant: preferences.design.horizontalTabBarHeight),
 
                 browserContentView.topAnchor.constraint(equalTo: tabBarView.bottomAnchor),
                 browserContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -480,7 +486,7 @@ private final class BrowserViewController: NSViewController {
                 tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-                tabBarView.heightAnchor.constraint(equalToConstant: 68)
+                tabBarView.heightAnchor.constraint(equalToConstant: preferences.design.horizontalTabBarHeight)
             ]
         }
 
@@ -497,8 +503,9 @@ private final class BrowserViewController: NSViewController {
         tabBarTitle.stringValue = placement == .top ? appName : "Вкладки"
         tabStack.orientation = isHorizontal ? .horizontal : .vertical
         tabStack.alignment = isHorizontal ? .height : .width
+        tabStack.spacing = preferences.design.tabSpacing
         tabStack.edgeInsets = isHorizontal
-            ? NSEdgeInsets(top: 10, left: 8, bottom: 10, right: 12)
+            ? NSEdgeInsets(top: preferences.design.horizontalTabInset, left: 8, bottom: preferences.design.horizontalTabInset, right: 12)
             : NSEdgeInsets(top: 10, left: 12, bottom: 14, right: 12)
         tabScrollView.hasHorizontalScroller = isHorizontal
         tabScrollView.hasVerticalScroller = !isHorizontal
@@ -508,7 +515,7 @@ private final class BrowserViewController: NSViewController {
                 tabBarHeaderView.topAnchor.constraint(equalTo: tabBarView.topAnchor),
                 tabBarHeaderView.leadingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
                 tabBarHeaderView.bottomAnchor.constraint(equalTo: tabBarView.bottomAnchor),
-                tabBarHeaderView.widthAnchor.constraint(equalToConstant: 156),
+                tabBarHeaderView.widthAnchor.constraint(equalToConstant: preferences.design.horizontalTabHeaderWidth),
 
                 tabBarTitle.leadingAnchor.constraint(equalTo: tabBarHeaderView.leadingAnchor, constant: 16),
                 tabBarTitle.centerYAnchor.constraint(equalTo: tabBarHeaderView.centerYAnchor),
@@ -683,7 +690,8 @@ private final class BrowserViewController: NSViewController {
                 title: tab.displayTitle,
                 detail: tab.profile.detail,
                 isActive: tab.id == activeTabID,
-                isHorizontal: isHorizontal
+                isHorizontal: isHorizontal,
+                design: preferences.design
             )
             row.onSelect = { [weak self, id = tab.id] in
                 self?.activateTab(id: id)
@@ -693,7 +701,7 @@ private final class BrowserViewController: NSViewController {
             }
 
             if isHorizontal {
-                row.widthAnchor.constraint(equalToConstant: 220).isActive = true
+                row.widthAnchor.constraint(equalToConstant: preferences.design.horizontalTabWidth).isActive = true
             }
 
             tabStack.addArrangedSubview(row)
@@ -712,7 +720,12 @@ private final class BrowserViewController: NSViewController {
     }
 
     private func showHome(in tab: BrowserTab) {
-        tab.loadHomePage(searchEngine: preferences.searchEngine, theme: preferences.theme)
+        tab.loadHomePage(
+            searchEngine: preferences.searchEngine,
+            theme: preferences.theme,
+            colorScheme: preferences.colorScheme,
+            design: preferences.design
+        )
     }
 
     private func openSettingsTab() {
@@ -739,6 +752,10 @@ private final class BrowserViewController: NSViewController {
             preferences: preferences,
             history: BrowserHistoryStore.shared.entries,
             downloads: DownloadHistoryStore.shared.entries,
+            performance: PerformanceMonitor.shared.snapshot(
+                activeTabs: tabs.count,
+                loadingTabs: tabs.filter { $0.webView.isLoading }.count
+            ),
             theme: preferences.theme
         )
     }
@@ -813,6 +830,18 @@ private final class BrowserViewController: NSViewController {
                let theme = ThemeMode(identifier: identifier),
                theme != preferences.theme {
                 preferences.theme = theme
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "scheme" })?.value,
+               let colorScheme = ColorSchemeMode(identifier: identifier),
+               colorScheme != preferences.colorScheme {
+                preferences.colorScheme = colorScheme
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "design" })?.value,
+               let design = DesignMode(identifier: identifier),
+               design != preferences.design {
+                preferences.design = design
             }
 
             showSettings(in: tab)
@@ -915,7 +944,12 @@ private final class BrowserViewController: NSViewController {
 
 extension BrowserViewController: WKNavigationDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        tab(for: webView)?.syncFromWebView()
+        if let tab = tab(for: webView) {
+            if !tab.isShowingHome && !tab.isShowingSettings {
+                PerformanceMonitor.shared.begin(tabID: tab.id)
+            }
+            tab.syncFromWebView()
+        }
         syncToolbar()
     }
 
@@ -929,6 +963,7 @@ extension BrowserViewController: WKNavigationDelegate {
         if !tab.isShowingHome && !tab.isShowingSettings,
            let currentURL = tab.url ?? webView.url {
             BrowserHistoryStore.shared.record(url: currentURL, title: tab.displayTitle)
+            PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .loaded)
             refreshSettingsTabs()
         }
 
@@ -936,13 +971,27 @@ extension BrowserViewController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-        tab(for: webView)?.syncFromWebView()
+        if let tab = tab(for: webView) {
+            tab.syncFromWebView()
+            if !tab.isShowingHome && !tab.isShowingSettings,
+               let currentURL = tab.url ?? webView.url {
+                PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .failed)
+                refreshSettingsTabs()
+            }
+        }
         syncToolbar()
         showLoadError(error)
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        tab(for: webView)?.syncFromWebView()
+        if let tab = tab(for: webView) {
+            tab.syncFromWebView()
+            if !tab.isShowingHome && !tab.isShowingSettings,
+               let currentURL = tab.url ?? webView.url {
+                PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .failed)
+                refreshSettingsTabs()
+            }
+        }
         syncToolbar()
         showLoadError(error)
     }
@@ -1104,24 +1153,30 @@ private final class BrowserTab {
         bindWebViewState()
     }
 
-    func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode) {
+    func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
         isShowingHome = true
         isShowingSettings = false
         title = appName
         url = nil
         progress = 1
         notifyChanged()
-        webView.loadHTMLString(HomePage.html(searchEngine: searchEngine, theme: theme), baseURL: nil)
+        webView.loadHTMLString(
+            HomePage.html(searchEngine: searchEngine, theme: theme, colorScheme: colorScheme, design: design),
+            baseURL: nil
+        )
     }
 
-    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], theme: ThemeMode) {
+    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode) {
         isShowingHome = false
         isShowingSettings = true
         title = settingsTitle
         url = nil
         progress = 1
         notifyChanged()
-        webView.loadHTMLString(SettingsPage.html(preferences: preferences, history: history, downloads: downloads, theme: theme), baseURL: nil)
+        webView.loadHTMLString(
+            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, performance: performance, theme: theme),
+            baseURL: nil
+        )
     }
 
     func load(_ url: URL) {
@@ -1231,10 +1286,20 @@ private final class AppPreferences {
         didSet { saveAndNotify(key: Keys.theme, value: theme.rawValue) }
     }
 
+    var colorScheme: ColorSchemeMode {
+        didSet { saveAndNotify(key: Keys.colorScheme, value: colorScheme.rawValue) }
+    }
+
+    var design: DesignMode {
+        didSet { saveAndNotify(key: Keys.design, value: design.rawValue) }
+    }
+
     private enum Keys {
         static let searchEngine = "searchEngine"
         static let tabPlacement = "tabPlacement"
         static let theme = "theme"
+        static let colorScheme = "colorScheme"
+        static let design = "design"
     }
 
     private let defaults = UserDefaults.standard
@@ -1243,6 +1308,8 @@ private final class AppPreferences {
         searchEngine = SearchEngine(rawValue: defaults.integer(forKey: Keys.searchEngine)) ?? .duckDuckGo
         tabPlacement = TabPlacement(rawValue: defaults.integer(forKey: Keys.tabPlacement)) ?? .left
         theme = ThemeMode(rawValue: defaults.integer(forKey: Keys.theme)) ?? .system
+        colorScheme = ColorSchemeMode(rawValue: defaults.integer(forKey: Keys.colorScheme)) ?? .aurora
+        design = DesignMode(rawValue: defaults.integer(forKey: Keys.design)) ?? .balanced
     }
 
     private func saveAndNotify(key: String, value: Int) {
@@ -1418,6 +1485,101 @@ private final class DownloadHistoryStore {
     }
 }
 
+private enum PerformanceStatus: String {
+    case loaded
+    case failed
+
+    var title: String {
+        switch self {
+        case .loaded:
+            return "Готово"
+        case .failed:
+            return "Ошибка"
+        }
+    }
+}
+
+private struct PerformanceSample {
+    let id: UUID
+    var title: String
+    var url: String
+    var date: Date
+    var duration: TimeInterval
+    var status: PerformanceStatus
+}
+
+private struct PerformanceSnapshot {
+    var samples: [PerformanceSample]
+    var activeTabs: Int
+    var loadingTabs: Int
+    var residentMemoryMegabytes: Double
+
+    var averageDuration: TimeInterval? {
+        let loadedSamples = samples.prefix(20).filter { $0.status == .loaded }
+        guard !loadedSamples.isEmpty else { return nil }
+        let total = loadedSamples.reduce(0) { $0 + $1.duration }
+        return total / Double(loadedSamples.count)
+    }
+}
+
+@MainActor
+private final class PerformanceMonitor {
+    static let shared = PerformanceMonitor()
+
+    private var starts: [UUID: Date] = [:]
+    private var samples: [PerformanceSample] = []
+    private let maximumSamples = 80
+
+    private init() {}
+
+    func begin(tabID: UUID) {
+        starts[tabID] = Date()
+    }
+
+    func finish(tabID: UUID, url: URL, title: String, status: PerformanceStatus) {
+        guard let startedAt = starts.removeValue(forKey: tabID) else { return }
+        let duration = max(0.001, Date().timeIntervalSince(startedAt))
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        samples.insert(
+            PerformanceSample(
+                id: UUID(),
+                title: cleanTitle.isEmpty ? url.absoluteString : cleanTitle,
+                url: url.absoluteString,
+                date: Date(),
+                duration: duration,
+                status: status
+            ),
+            at: 0
+        )
+
+        if samples.count > maximumSamples {
+            samples.removeLast(samples.count - maximumSamples)
+        }
+    }
+
+    func snapshot(activeTabs: Int, loadingTabs: Int) -> PerformanceSnapshot {
+        PerformanceSnapshot(
+            samples: samples,
+            activeTabs: activeTabs,
+            loadingTabs: loadingTabs,
+            residentMemoryMegabytes: Self.residentMemoryMegabytes()
+        )
+    }
+
+    private static func residentMemoryMegabytes() -> Double {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.stride / MemoryLayout<natural_t>.stride)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { reboundPointer in
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), reboundPointer, &count)
+            }
+        }
+
+        guard result == KERN_SUCCESS else { return 0 }
+        return Double(info.resident_size) / 1024 / 1024
+    }
+}
+
 private enum DownloadPath {
     static func uniqueDestination(for suggestedFilename: String) -> URL {
         let downloadsDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
@@ -1465,6 +1627,30 @@ private enum DateDisplay {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter.string(from: date)
+    }
+}
+
+private enum PerformanceDisplay {
+    static func duration(_ interval: TimeInterval?) -> String {
+        guard let interval else { return "нет данных" }
+        return duration(interval)
+    }
+
+    static func duration(_ interval: TimeInterval) -> String {
+        if interval < 1 {
+            return "\(Int((interval * 1000).rounded())) мс"
+        }
+
+        return String(format: "%.1f с", interval)
+    }
+
+    static func memory(_ megabytes: Double) -> String {
+        guard megabytes > 0 else { return "нет данных" }
+        if megabytes >= 1024 {
+            return String(format: "%.1f ГБ", megabytes / 1024)
+        }
+
+        return "\(Int(megabytes.rounded())) МБ"
     }
 }
 
@@ -1563,6 +1749,384 @@ private enum ThemeMode: Int, CaseIterable {
     }
 }
 
+private enum ColorSchemeMode: Int, CaseIterable {
+    case aurora
+    case graphite
+    case ocean
+    case forest
+    case rose
+    case amber
+
+    var title: String {
+        switch self {
+        case .aurora:
+            return "Аврора"
+        case .graphite:
+            return "Графит"
+        case .ocean:
+            return "Океан"
+        case .forest:
+            return "Лес"
+        case .rose:
+            return "Роза"
+        case .amber:
+            return "Янтарь"
+        }
+    }
+
+    var identifier: String {
+        switch self {
+        case .aurora:
+            return "aurora"
+        case .graphite:
+            return "graphite"
+        case .ocean:
+            return "ocean"
+        case .forest:
+            return "forest"
+        case .rose:
+            return "rose"
+        case .amber:
+            return "amber"
+        }
+    }
+
+    var accent: String {
+        switch self {
+        case .aurora:
+            return "#6ee7c7"
+        case .graphite:
+            return "#aeb7c2"
+        case .ocean:
+            return "#38bdf8"
+        case .forest:
+            return "#86efac"
+        case .rose:
+            return "#fb7185"
+        case .amber:
+            return "#f59e0b"
+        }
+    }
+
+    var accentTwo: String {
+        switch self {
+        case .aurora:
+            return "#8dc7ff"
+        case .graphite:
+            return "#e5e7eb"
+        case .ocean:
+            return "#22d3ee"
+        case .forest:
+            return "#34d399"
+        case .rose:
+            return "#f0abfc"
+        case .amber:
+            return "#fde68a"
+        }
+    }
+
+    var lightBackground: String {
+        switch self {
+        case .aurora:
+            return "#eff6f7"
+        case .graphite:
+            return "#f2f4f6"
+        case .ocean:
+            return "#edf7fb"
+        case .forest:
+            return "#eff8f0"
+        case .rose:
+            return "#fbf1f5"
+        case .amber:
+            return "#fbf5e8"
+        }
+    }
+
+    var lightPanelStrong: String {
+        switch self {
+        case .aurora:
+            return "#dbe8e8"
+        case .graphite:
+            return "#dfe4e9"
+        case .ocean:
+            return "#d8eef7"
+        case .forest:
+            return "#dceee0"
+        case .rose:
+            return "#f2dce5"
+        case .amber:
+            return "#f0e4c8"
+        }
+    }
+
+    var darkBackground: String {
+        switch self {
+        case .aurora:
+            return "#071013"
+        case .graphite:
+            return "#0d0f12"
+        case .ocean:
+            return "#06111b"
+        case .forest:
+            return "#07130d"
+        case .rose:
+            return "#150910"
+        case .amber:
+            return "#151006"
+        }
+    }
+
+    var darkPanelStrong: String {
+        switch self {
+        case .aurora:
+            return "#17252a"
+        case .graphite:
+            return "#20242a"
+        case .ocean:
+            return "#102a36"
+        case .forest:
+            return "#152b20"
+        case .rose:
+            return "#2d1722"
+        case .amber:
+            return "#2c2412"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let scheme = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = scheme
+    }
+}
+
+private enum DesignMode: Int, CaseIterable {
+    case balanced
+    case compact
+    case spacious
+    case focus
+
+    var title: String {
+        switch self {
+        case .balanced:
+            return "Сбалансированный"
+        case .compact:
+            return "Компактный"
+        case .spacious:
+            return "Просторный"
+        case .focus:
+            return "Фокус"
+        }
+    }
+
+    var identifier: String {
+        switch self {
+        case .balanced:
+            return "balanced"
+        case .compact:
+            return "compact"
+        case .spacious:
+            return "spacious"
+        case .focus:
+            return "focus"
+        }
+    }
+
+    var toolbarHeight: CGFloat {
+        switch self {
+        case .balanced:
+            return 56
+        case .compact:
+            return 50
+        case .spacious:
+            return 64
+        case .focus:
+            return 54
+        }
+    }
+
+    var verticalTabBarWidth: CGFloat {
+        switch self {
+        case .balanced:
+            return 288
+        case .compact:
+            return 248
+        case .spacious:
+            return 320
+        case .focus:
+            return 268
+        }
+    }
+
+    var horizontalTabBarHeight: CGFloat {
+        switch self {
+        case .balanced:
+            return 68
+        case .compact:
+            return 58
+        case .spacious:
+            return 78
+        case .focus:
+            return 62
+        }
+    }
+
+    var horizontalTabHeaderWidth: CGFloat {
+        switch self {
+        case .balanced:
+            return 156
+        case .compact:
+            return 138
+        case .spacious:
+            return 178
+        case .focus:
+            return 146
+        }
+    }
+
+    var verticalTabRowHeight: CGFloat {
+        switch self {
+        case .balanced:
+            return 58
+        case .compact:
+            return 48
+        case .spacious:
+            return 66
+        case .focus:
+            return 52
+        }
+    }
+
+    var horizontalTabRowHeight: CGFloat {
+        switch self {
+        case .balanced:
+            return 44
+        case .compact:
+            return 38
+        case .spacious:
+            return 50
+        case .focus:
+            return 40
+        }
+    }
+
+    var horizontalTabWidth: CGFloat {
+        switch self {
+        case .balanced:
+            return 220
+        case .compact:
+            return 184
+        case .spacious:
+            return 252
+        case .focus:
+            return 198
+        }
+    }
+
+    var tabSpacing: CGFloat {
+        switch self {
+        case .balanced:
+            return 10
+        case .compact:
+            return 6
+        case .spacious:
+            return 12
+        case .focus:
+            return 8
+        }
+    }
+
+    var horizontalTabInset: CGFloat {
+        switch self {
+        case .balanced:
+            return 10
+        case .compact:
+            return 6
+        case .spacious:
+            return 12
+        case .focus:
+            return 8
+        }
+    }
+
+    var rowCornerRadius: CGFloat {
+        switch self {
+        case .balanced:
+            return 10
+        case .compact:
+            return 7
+        case .spacious:
+            return 12
+        case .focus:
+            return 6
+        }
+    }
+
+    var pageWidth: String {
+        switch self {
+        case .balanced:
+            return "860px"
+        case .compact:
+            return "760px"
+        case .spacious:
+            return "980px"
+        case .focus:
+            return "780px"
+        }
+    }
+
+    var settingsWidth: String {
+        switch self {
+        case .balanced:
+            return "1120px"
+        case .compact:
+            return "980px"
+        case .spacious:
+            return "1240px"
+        case .focus:
+            return "1040px"
+        }
+    }
+
+    var radius: String {
+        switch self {
+        case .balanced:
+            return "14px"
+        case .compact:
+            return "8px"
+        case .spacious:
+            return "18px"
+        case .focus:
+            return "6px"
+        }
+    }
+
+    var gap: String {
+        switch self {
+        case .balanced:
+            return "22px"
+        case .compact:
+            return "14px"
+        case .spacious:
+            return "30px"
+        case .focus:
+            return "18px"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let design = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = design
+    }
+}
+
 private enum SearchEngine: Int, CaseIterable {
     case duckDuckGo
     case google
@@ -1647,16 +2211,16 @@ private struct ChromePalette {
     let brand: NSColor
     let secondaryText: NSColor
 
-    init(theme: ThemeMode) {
+    init(theme: ThemeMode, colorScheme: ColorSchemeMode) {
         switch theme {
         case .light:
-            window = NSColor(red: 0.95, green: 0.97, blue: 0.98, alpha: 1)
-            webBackground = NSColor(red: 0.98, green: 0.99, blue: 1, alpha: 1)
+            window = NSColor(hex: colorScheme.lightBackground) ?? NSColor(red: 0.95, green: 0.97, blue: 0.98, alpha: 1)
+            webBackground = NSColor(hex: colorScheme.lightPanelStrong) ?? NSColor(red: 0.98, green: 0.99, blue: 1, alpha: 1)
             brand = NSColor(red: 0.08, green: 0.13, blue: 0.18, alpha: 1)
             secondaryText = NSColor(red: 0.36, green: 0.43, blue: 0.48, alpha: 1)
         case .dark:
-            window = NSColor(red: 0.07, green: 0.08, blue: 0.09, alpha: 1)
-            webBackground = NSColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1)
+            window = NSColor(hex: colorScheme.darkBackground) ?? NSColor(red: 0.07, green: 0.08, blue: 0.09, alpha: 1)
+            webBackground = NSColor(hex: colorScheme.darkPanelStrong) ?? NSColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1)
             brand = NSColor(red: 0.92, green: 0.98, blue: 1, alpha: 1)
             secondaryText = NSColor(red: 0.66, green: 0.72, blue: 0.75, alpha: 1)
         case .system:
@@ -2085,12 +2649,13 @@ private final class TabRowView: NSView {
         nil
     }
 
-    func configure(title: String, detail: String, isActive: Bool, isHorizontal: Bool) {
+    func configure(title: String, detail: String, isActive: Bool, isHorizontal: Bool, design: DesignMode) {
         titleField.stringValue = title
         detailField.stringValue = detail
         detailField.isHidden = isHorizontal
         self.isActive = isActive
-        heightConstraint?.constant = isHorizontal ? 44 : 58
+        layer?.cornerRadius = design.rowCornerRadius
+        heightConstraint?.constant = isHorizontal ? design.horizontalTabRowHeight : design.verticalTabRowHeight
         titleTopConstraint?.isActive = !isHorizontal
         titleCenterYConstraint?.isActive = isHorizontal
         updateStyle()
@@ -2194,8 +2759,8 @@ private enum URLParser {
 }
 
 private enum HomePage {
-    static func html(searchEngine: SearchEngine, theme: ThemeMode) -> String {
-        let palette = HomePalette(theme: theme)
+    static func html(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
+        let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
         let engineOptions = SearchEngine.allCases.map { option in
             let selected = option == searchEngine ? " selected" : ""
@@ -2221,6 +2786,9 @@ private enum HomePage {
               --accent: \(palette.accent);
               --accent-2: \(palette.accentTwo);
               --shadow: \(palette.shadow);
+              --radius: \(palette.radius);
+              --gap: \(palette.gap);
+              --page-width: \(palette.pageWidth);
             }
             * { box-sizing: border-box; }
             html, body { margin: 0; min-height: 100%; }
@@ -2235,9 +2803,9 @@ private enum HomePage {
               overflow: hidden;
             }
             main {
-              width: min(860px, calc(100vw - 48px));
+              width: min(var(--page-width), calc(100vw - 48px));
               display: grid;
-              gap: 28px;
+              gap: var(--gap);
             }
             .mast {
               display: grid;
@@ -2271,7 +2839,7 @@ private enum HomePage {
               padding: 12px;
               background: var(--panel);
               border: 1px solid var(--line);
-              border-radius: 18px;
+              border-radius: calc(var(--radius) + 4px);
               box-shadow: 0 26px 70px var(--shadow);
             }
             input {
@@ -2279,7 +2847,7 @@ private enum HomePage {
               min-width: 0;
               border: 0;
               outline: 0;
-              border-radius: 12px;
+              border-radius: var(--radius);
               padding: 16px 18px;
               font-size: 17px;
               color: var(--text);
@@ -2291,7 +2859,7 @@ private enum HomePage {
               min-width: 0;
               border: 1px solid var(--line);
               outline: 0;
-              border-radius: 12px;
+              border-radius: var(--radius);
               padding: 0 14px;
               font-size: 15px;
               font-weight: 650;
@@ -2300,7 +2868,7 @@ private enum HomePage {
             }
             button {
               border: 0;
-              border-radius: 12px;
+              border-radius: var(--radius);
               padding: 0 22px;
               min-width: 112px;
               font-size: 15px;
@@ -2319,7 +2887,7 @@ private enum HomePage {
               text-decoration: none;
               padding: 14px 15px;
               border: 1px solid var(--line);
-              border-radius: 14px;
+              border-radius: var(--radius);
               background: color-mix(in srgb, var(--panel) 74%, transparent);
               font-size: 14px;
               font-weight: 650;
@@ -2381,8 +2949,8 @@ private enum HomePage {
 }
 
 private enum SettingsPage {
-    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], theme: ThemeMode) -> String {
-        let palette = HomePalette(theme: theme)
+    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode) -> String {
+        let palette = HomePalette(theme: theme, colorScheme: preferences.colorScheme, design: preferences.design)
         let searchOptions = SearchEngine.allCases.map { option in
             let selected = option == preferences.searchEngine ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
@@ -2393,6 +2961,14 @@ private enum SettingsPage {
         }.joined()
         let themeOptions = ThemeMode.allCases.map { option in
             let selected = option == preferences.theme ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let schemeOptions = ColorSchemeMode.allCases.map { option in
+            let selected = option == preferences.colorScheme ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let designOptions = DesignMode.allCases.map { option in
+            let selected = option == preferences.design ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
         }.joined()
 
@@ -2422,6 +2998,22 @@ private enum SettingsPage {
             """
         }.joined()
 
+        let performanceMarkup = performance.samples.prefix(30).map { sample in
+            return """
+            <div class="list-row">
+              <span class="row-main">
+                <strong>\(sample.title.htmlEscaped)</strong>
+                <small>\(sample.url.htmlEscaped)</small>
+              </span>
+              <span class="row-meta">
+                <span class="status \(sample.status.rawValue)">\(sample.status.title.htmlEscaped)</span>
+                <strong class="duration">\(PerformanceDisplay.duration(sample.duration).htmlEscaped)</strong>
+                <time>\(DateDisplay.string(from: sample.date).htmlEscaped)</time>
+              </span>
+            </div>
+            """
+        }.joined()
+
         return """
         <!doctype html>
         <html lang="ru">
@@ -2441,6 +3033,9 @@ private enum SettingsPage {
               --accent: \(palette.accent);
               --accent-2: \(palette.accentTwo);
               --shadow: \(palette.shadow);
+              --radius: \(palette.radius);
+              --gap: \(palette.gap);
+              --settings-width: \(palette.settingsWidth);
             }
             * { box-sizing: border-box; }
             html, body { margin: 0; min-height: 100%; }
@@ -2451,11 +3046,11 @@ private enum SettingsPage {
               background: linear-gradient(120deg, var(--bg), var(--panel-strong));
             }
             main {
-              width: min(1120px, calc(100vw - 56px));
+              width: min(var(--settings-width), calc(100vw - 56px));
               margin: 0 auto;
               padding: 40px 0 56px;
               display: grid;
-              gap: 22px;
+              gap: var(--gap);
             }
             header {
               display: flex;
@@ -2471,7 +3066,7 @@ private enum SettingsPage {
             .muted { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
             .settings-grid {
               display: grid;
-              grid-template-columns: repeat(3, minmax(0, 1fr));
+              grid-template-columns: repeat(5, minmax(0, 1fr));
               gap: 12px;
             }
             label, .section-head {
@@ -2488,7 +3083,7 @@ private enum SettingsPage {
               width: 100%;
               min-width: 0;
               min-height: 38px;
-              border-radius: 8px;
+              border-radius: var(--radius);
               border: 1px solid var(--line);
               color: var(--text);
               background: var(--panel);
@@ -2517,7 +3112,7 @@ private enum SettingsPage {
               color: var(--text);
               text-decoration: none;
               border: 1px solid var(--line);
-              border-radius: 8px;
+              border-radius: var(--radius);
               background: var(--panel);
               padding: 12px 14px;
               box-shadow: 0 14px 34px var(--shadow);
@@ -2540,7 +3135,7 @@ private enum SettingsPage {
             .empty {
               color: var(--muted);
               border: 1px dashed var(--line);
-              border-radius: 8px;
+              border-radius: var(--radius);
               padding: 18px;
               margin: 0;
             }
@@ -2549,7 +3144,7 @@ private enum SettingsPage {
               align-items: center;
               justify-content: center;
               min-height: 34px;
-              border-radius: 8px;
+              border-radius: var(--radius);
               padding: 0 12px;
               border: 1px solid var(--line);
               color: var(--text);
@@ -2568,12 +3163,47 @@ private enum SettingsPage {
             }
             .failed { background: rgba(255, 88, 88, 0.16); }
             .inProgress { background: rgba(125, 184, 255, 0.18); }
+            .metric-grid {
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 10px;
+            }
+            .metric {
+              min-height: 86px;
+              display: grid;
+              align-content: center;
+              gap: 8px;
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+              background: var(--panel);
+              padding: 14px;
+              box-shadow: 0 14px 34px var(--shadow);
+            }
+            .metric span {
+              color: var(--muted);
+              font-size: 12px;
+              font-weight: 700;
+              text-transform: uppercase;
+            }
+            .metric strong {
+              font-size: 22px;
+              line-height: 1;
+            }
+            .row-meta {
+              display: grid;
+              gap: 5px;
+              justify-items: end;
+            }
+            .duration {
+              font-size: 13px;
+            }
             @media (max-width: 760px) {
               main { width: min(100vw - 28px, 1120px); padding-top: 26px; }
               header, .section-head, .list-row { grid-template-columns: 1fr; }
               header { align-items: start; }
               .settings-grid { grid-template-columns: 1fr; }
-              time, .status { justify-self: start; }
+              .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+              time, .status, .row-meta { justify-self: start; justify-items: start; }
             }
           </style>
         </head>
@@ -2582,7 +3212,7 @@ private enum SettingsPage {
             <header>
               <div>
                 <h1>\(settingsTitle)</h1>
-                <p class="muted">Минимальные параметры, история посещений и загрузки.</p>
+                <p class="muted">Минимальные параметры, цветовые схемы, история, загрузки и состояние браузера.</p>
               </div>
               <a class="button" href="\(northStarSettingsScheme)://clear-history">Очистить историю</a>
             </header>
@@ -2600,6 +3230,32 @@ private enum SettingsPage {
                 <span>Тема</span>
                 <select id="theme">\(themeOptions)</select>
               </label>
+              <label>
+                <span>Цветовая схема</span>
+                <select id="scheme">\(schemeOptions)</select>
+              </label>
+              <label>
+                <span>Дизайн</span>
+                <select id="design">\(designOptions)</select>
+              </label>
+            </section>
+
+            <section aria-label="Производительность">
+              <div class="section-head">
+                <div>
+                  <h2>Производительность</h2>
+                  <p class="muted">Лёгкий мониторинг текущего окна и последних загрузок.</p>
+                </div>
+              </div>
+              <div class="metric-grid">
+                <div class="metric"><span>Вкладки</span><strong>\(performance.activeTabs)</strong></div>
+                <div class="metric"><span>Загружается</span><strong>\(performance.loadingTabs)</strong></div>
+                <div class="metric"><span>Память</span><strong>\(PerformanceDisplay.memory(performance.residentMemoryMegabytes).htmlEscaped)</strong></div>
+                <div class="metric"><span>Средняя загрузка</span><strong>\(PerformanceDisplay.duration(performance.averageDuration).htmlEscaped)</strong></div>
+              </div>
+              <div class="list">
+                \(performanceMarkup.isEmpty ? "<p class=\"empty\">Данных о загрузках пока нет.</p>" : performanceMarkup)
+              </div>
             </section>
 
             <section aria-label="История посещений">
@@ -2633,7 +3289,9 @@ private enum SettingsPage {
               const params = new URLSearchParams({
                 search: document.getElementById("search").value,
                 tabs: document.getElementById("tabs").value,
-                theme: document.getElementById("theme").value
+                theme: document.getElementById("theme").value,
+                scheme: document.getElementById("scheme").value,
+                design: document.getElementById("design").value
               });
               window.location.href = "\(northStarSettingsScheme)://update?" + params.toString();
             };
@@ -2658,43 +3316,63 @@ private struct HomePalette {
     let accent: String
     let accentTwo: String
     let shadow: String
+    let radius: String
+    let gap: String
+    let pageWidth: String
+    let settingsWidth: String
 
-    init(theme: ThemeMode) {
+    init(theme: ThemeMode, colorScheme colorSchemeMode: ColorSchemeMode, design: DesignMode) {
+        accent = colorSchemeMode.accent
+        accentTwo = colorSchemeMode.accentTwo
+        radius = design.radius
+        gap = design.gap
+        pageWidth = design.pageWidth
+        settingsWidth = design.settingsWidth
+
         switch theme {
         case .light:
             colorScheme = "light"
-            background = "#eff6f7"
+            background = colorSchemeMode.lightBackground
             panel = "rgba(255,255,255,0.78)"
-            panelStrong = "#dbe8e8"
+            panelStrong = colorSchemeMode.lightPanelStrong
             text = "#11191f"
             muted = "#52656c"
             line = "rgba(39,65,72,0.18)"
-            accent = "#47d6b0"
-            accentTwo = "#7bb8ff"
             shadow = "rgba(34,65,72,0.16)"
         case .dark:
             colorScheme = "dark"
-            background = "#071013"
+            background = colorSchemeMode.darkBackground
             panel = "rgba(17,27,31,0.82)"
-            panelStrong = "#17252a"
+            panelStrong = colorSchemeMode.darkPanelStrong
             text = "#f4fbfc"
             muted = "#9eb5ba"
             line = "rgba(209,240,245,0.16)"
-            accent = "#6ee7c7"
-            accentTwo = "#8dc7ff"
             shadow = "rgba(0,0,0,0.34)"
         case .system:
             colorScheme = "light dark"
             background = "Canvas"
-            panel = "color-mix(in srgb, Canvas 78%, CanvasText 4%)"
-            panelStrong = "color-mix(in srgb, Canvas 84%, #47d6b0 10%)"
+            panel = "color-mix(in srgb, Canvas 78%, \(colorSchemeMode.accent) 6%)"
+            panelStrong = "color-mix(in srgb, Canvas 84%, \(colorSchemeMode.accent) 10%)"
             text = "CanvasText"
             muted = "color-mix(in srgb, CanvasText 58%, transparent)"
             line = "color-mix(in srgb, CanvasText 16%, transparent)"
-            accent = "#6ee7c7"
-            accentTwo = "#8dc7ff"
             shadow = "rgba(0,0,0,0.18)"
         }
+    }
+}
+
+private extension NSColor {
+    convenience init?(hex: String) {
+        let normalized = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#").union(.whitespacesAndNewlines))
+        guard normalized.count == 6,
+              let value = Int(normalized, radix: 16) else {
+            return nil
+        }
+
+        let red = CGFloat((value >> 16) & 0xff) / 255
+        let green = CGFloat((value >> 8) & 0xff) / 255
+        let blue = CGFloat(value & 0xff) / 255
+        self.init(red: red, green: green, blue: blue, alpha: 1)
     }
 }
 
