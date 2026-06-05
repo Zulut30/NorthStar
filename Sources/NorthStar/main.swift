@@ -174,6 +174,7 @@ private final class BrowserViewController: NSViewController {
     private let bookmarksBarStack = NSStackView()
     private var bookmarksBarHeightConstraint: NSLayoutConstraint?
     private var isBookmarksBarVisible = UserDefaults.standard.object(forKey: "northstar.bookmarksBar.visible") as? Bool ?? true
+    private var bookmarkClipboard: (title: String, url: String)?
 
     private let findBarView = NSVisualEffectView()
     private let findField = NSSearchField()
@@ -1379,21 +1380,22 @@ private final class BrowserViewController: NSViewController {
         bookmarksBarView.isHidden = !isBookmarksBarVisible
     }
 
-    @objc func createBookmarkFolderCommand(_ sender: Any?) {
+    private func promptForText(title: String, message: String, initialValue: String = "", placeholder: String = "", confirmTitle: String, handler: @escaping (String) -> Void) {
         let alert = NSAlert()
-        alert.messageText = "Новая папка закладок"
-        alert.informativeText = "Введите название папки."
+        alert.messageText = title
+        alert.informativeText = message
         alert.alertStyle = .informational
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.placeholderString = "Название папки"
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.stringValue = initialValue
+        field.placeholderString = placeholder
         alert.accessoryView = field
-        alert.addButton(withTitle: "Создать")
+        alert.addButton(withTitle: confirmTitle)
         alert.addButton(withTitle: "Отмена")
         alert.window.initialFirstResponder = field
 
         let handle: (NSApplication.ModalResponse) -> Void = { response in
             guard response == .alertFirstButtonReturn else { return }
-            BookmarkStore.shared.createFolder(named: field.stringValue)
+            handler(field.stringValue)
         }
 
         if let window = view.window {
@@ -1401,6 +1403,32 @@ private final class BrowserViewController: NSViewController {
         } else {
             handle(alert.runModal())
         }
+    }
+
+    @objc func createBookmarkFolderCommand(_ sender: Any?) {
+        promptForText(
+            title: "Новая папка закладок",
+            message: "Введите название папки.",
+            placeholder: "Название папки",
+            confirmTitle: "Создать"
+        ) { name in
+            BookmarkStore.shared.createFolder(named: name)
+        }
+    }
+
+    private func pasteableBookmark() -> (title: String, url: String)? {
+        if let clip = bookmarkClipboard {
+            return clip
+        }
+
+        if let text = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           let url = URLParser.directURL(from: text),
+           let scheme = url.scheme?.lowercased(),
+           ["http", "https"].contains(scheme) {
+            return (title: url.host(percentEncoded: false) ?? text, url: url.absoluteString)
+        }
+
+        return nil
     }
 
     private func rebuildBookmarksBar() {
@@ -1420,6 +1448,13 @@ private final class BrowserViewController: NSViewController {
         let newFolderItem = NSMenuItem(title: "Новая папка...", action: #selector(createBookmarkFolderCommand(_:)), keyEquivalent: "")
         newFolderItem.target = self
         barMenu.addItem(newFolderItem)
+        if pasteableBookmark() != nil {
+            let pasteItem = NSMenuItem(title: "Вставить закладку", action: #selector(pasteBookmark(_:)), keyEquivalent: "")
+            pasteItem.target = self
+            pasteItem.representedObject = ""
+            barMenu.addItem(pasteItem)
+        }
+        barMenu.addItem(.separator())
         let hideItem = NSMenuItem(title: "Скрыть панель закладок", action: #selector(toggleBookmarksBarCommand(_:)), keyEquivalent: "")
         hideItem.target = self
         barMenu.addItem(hideItem)
@@ -1451,6 +1486,19 @@ private final class BrowserViewController: NSViewController {
         return NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
     }
 
+    private func applyAsyncFavicon(to button: NSButton, urlString: String) {
+        guard let url = URL(string: urlString),
+              FaviconStore.shared.cachedImage(for: url, profile: .system) == nil else {
+            return
+        }
+
+        Task { [weak button] in
+            let image = await FaviconStore.shared.image(for: url, declaredIconURL: nil, profile: .system)
+            guard let button, let image else { return }
+            button.image = image
+        }
+    }
+
     private func makeBookmarkButton(for entry: BookmarkEntry) -> NSButton {
         let button = NSButton(title: entry.title.truncatedForSuggestion(maxLength: 22), target: self, action: #selector(openBookmarkFromBar(_:)))
         button.bezelStyle = .accessoryBarAction
@@ -1460,6 +1508,9 @@ private final class BrowserViewController: NSViewController {
         button.imageScaling = .scaleProportionallyDown
         button.toolTip = entry.url
         button.cell?.representedObject = entry.url
+        applyAsyncFavicon(to: button, urlString: entry.url)
+
+        let info: [String: String] = ["id": entry.id.uuidString, "title": entry.title, "url": entry.url]
 
         let menu = NSMenu()
         let openNew = NSMenuItem(title: "Открыть в новой вкладке", action: #selector(openBookmarkInNewTab(_:)), keyEquivalent: "")
@@ -1467,6 +1518,11 @@ private final class BrowserViewController: NSViewController {
         openNew.representedObject = entry.url
         menu.addItem(openNew)
         menu.addItem(.separator())
+
+        let renameItem = NSMenuItem(title: "Переименовать...", action: #selector(renameBookmarkFromBar(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.representedObject = info
+        menu.addItem(renameItem)
 
         let moveMenu = NSMenu()
         let rootItem = NSMenuItem(title: "Без папки", action: #selector(moveBookmarkToFolder(_:)), keyEquivalent: "")
@@ -1484,6 +1540,22 @@ private final class BrowserViewController: NSViewController {
         let moveItem = NSMenuItem(title: "Переместить в папку", action: nil, keyEquivalent: "")
         moveItem.submenu = moveMenu
         menu.addItem(moveItem)
+
+        menu.addItem(.separator())
+        let cutItem = NSMenuItem(title: "Вырезать", action: #selector(cutBookmarkFromBar(_:)), keyEquivalent: "")
+        cutItem.target = self
+        cutItem.representedObject = info
+        menu.addItem(cutItem)
+
+        let copyItem = NSMenuItem(title: "Копировать", action: #selector(copyBookmarkFromBar(_:)), keyEquivalent: "")
+        copyItem.target = self
+        copyItem.representedObject = info
+        menu.addItem(copyItem)
+
+        let copyAddressItem = NSMenuItem(title: "Скопировать адрес", action: #selector(copyBookmarkAddress(_:)), keyEquivalent: "")
+        copyAddressItem.target = self
+        copyAddressItem.representedObject = entry.url
+        menu.addItem(copyAddressItem)
 
         menu.addItem(.separator())
         let deleteItem = NSMenuItem(title: "Удалить", action: #selector(deleteBookmarkFromBar(_:)), keyEquivalent: "")
@@ -1573,6 +1645,88 @@ private final class BrowserViewController: NSViewController {
         refreshSettingsTabs()
     }
 
+    @objc private func renameBookmarkFromBar(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let idString = info["id"],
+              let id = UUID(uuidString: idString) else {
+            return
+        }
+
+        promptForText(
+            title: "Переименовать закладку",
+            message: "Введите новое название.",
+            initialValue: info["title"] ?? "",
+            confirmTitle: "Переименовать"
+        ) { name in
+            BookmarkStore.shared.rename(id: id, title: name)
+        }
+    }
+
+    @objc private func renameBookmarkFolder(_ sender: NSMenuItem) {
+        guard let folder = sender.representedObject as? String else { return }
+
+        promptForText(
+            title: "Переименовать папку",
+            message: "Введите новое название папки.",
+            initialValue: folder,
+            confirmTitle: "Переименовать"
+        ) { name in
+            BookmarkStore.shared.renameFolder(from: folder, to: name)
+        }
+    }
+
+    @objc private func copyBookmarkFromBar(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let title = info["title"],
+              let url = info["url"] else {
+            return
+        }
+
+        bookmarkClipboard = (title: title, url: url)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        rebuildBookmarksBar()
+    }
+
+    @objc private func cutBookmarkFromBar(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let title = info["title"],
+              let url = info["url"],
+              let idString = info["id"],
+              let id = UUID(uuidString: idString) else {
+            return
+        }
+
+        bookmarkClipboard = (title: title, url: url)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+        BookmarkStore.shared.remove(id: id)
+        refreshSettingsTabs()
+        if let tab = activeTab {
+            syncBookmarkButton(for: tab)
+        }
+    }
+
+    @objc private func copyBookmarkAddress(_ sender: NSMenuItem) {
+        guard let url = sender.representedObject as? String else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url, forType: .string)
+    }
+
+    @objc private func pasteBookmark(_ sender: NSMenuItem) {
+        guard let pasteable = pasteableBookmark(),
+              let url = URL(string: pasteable.url) else {
+            return
+        }
+
+        let folder = (sender.representedObject as? String).flatMap { $0.isEmpty ? nil : $0 }
+        BookmarkStore.shared.add(url: url, title: pasteable.title, folder: folder)
+        refreshSettingsTabs()
+        if let tab = activeTab {
+            syncBookmarkButton(for: tab)
+        }
+    }
+
     @objc private func showBookmarkFolderMenu(_ sender: NSButton) {
         guard let folder = sender.cell?.representedObject as? String else { return }
 
@@ -1593,6 +1747,16 @@ private final class BrowserViewController: NSViewController {
         }
 
         menu.addItem(.separator())
+        if pasteableBookmark() != nil {
+            let pasteItem = NSMenuItem(title: "Вставить закладку", action: #selector(pasteBookmark(_:)), keyEquivalent: "")
+            pasteItem.target = self
+            pasteItem.representedObject = folder
+            menu.addItem(pasteItem)
+        }
+        let renameItem = NSMenuItem(title: "Переименовать папку...", action: #selector(renameBookmarkFolder(_:)), keyEquivalent: "")
+        renameItem.target = self
+        renameItem.representedObject = folder
+        menu.addItem(renameItem)
         let deleteItem = NSMenuItem(title: "Удалить папку", action: #selector(deleteBookmarkFolder(_:)), keyEquivalent: "")
         deleteItem.target = self
         deleteItem.representedObject = folder
@@ -3783,13 +3947,28 @@ private final class BookmarkStore {
         if isBookmarked(url: url) { remove(url: url); return false }
         add(url: url, title: title); return true
     }
-    func add(url: URL, title: String) {
+    func add(url: URL, title: String, folder: String? = nil) {
         guard let scheme = url.scheme?.lowercased(), ["http", "https", "file"].contains(scheme) else { return }
         let urlString = url.absoluteString
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         entries.removeAll { $0.url == urlString }
-        entries.insert(BookmarkEntry(id: UUID(), title: cleanTitle.isEmpty ? urlString : cleanTitle, url: urlString, date: Date()), at: 0)
+        entries.insert(BookmarkEntry(id: UUID(), title: cleanTitle.isEmpty ? urlString : cleanTitle, url: urlString, date: Date(), folder: folder), at: 0)
         if entries.count > maximumEntries { entries.removeLast(entries.count - maximumEntries) }
+        save()
+    }
+
+    func renameFolder(from oldName: String, to newName: String) {
+        let clean = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean != oldName else { return }
+        if let index = explicitFolders.firstIndex(of: oldName) {
+            explicitFolders[index] = clean
+        } else if !explicitFolders.contains(clean) {
+            explicitFolders.append(clean)
+        }
+        defaults.set(explicitFolders, forKey: foldersKey)
+        for index in entries.indices where entries[index].folder == oldName {
+            entries[index].folder = clean
+        }
         save()
     }
     func remove(url: URL) { entries.removeAll { $0.url == url.absoluteString }; save() }
