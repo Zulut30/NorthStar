@@ -7067,17 +7067,17 @@ private enum HomePage {
               animation: rise 0.55s 0.1s ease both;
             }
             .search {
-              width: min(820px, 100%);
+              width: min(860px, 100%);
               display: flex;
               align-items: center;
-              gap: 14px;
-              min-height: 68px;
-              padding: 0 9px 0 22px;
+              gap: 12px;
+              min-height: 72px;
+              padding: 0 10px 0 24px;
               border: 1px solid var(--line);
-              border-radius: 999px;
-              background: color-mix(in srgb, var(--panel) 92%, transparent);
-              box-shadow: 0 24px 60px var(--shadow);
-              backdrop-filter: blur(20px);
+              border-radius: 24px;
+              background: color-mix(in srgb, var(--panel) 96%, transparent);
+              box-shadow: 0 14px 44px var(--shadow);
+              backdrop-filter: blur(22px);
               transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
             }
             .search:hover {
@@ -7085,39 +7085,88 @@ private enum HomePage {
             }
             .search:focus-within {
               border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
-              box-shadow: 0 26px 64px var(--shadow), 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+              box-shadow: 0 18px 52px var(--shadow), 0 0 0 4px color-mix(in srgb, var(--accent) 15%, transparent);
               transform: translateY(-1px);
             }
-            .search-logo {
-              width: 24px;
-              height: 24px;
+            .search-icon {
+              width: 22px;
+              height: 22px;
               flex: none;
-              border-radius: 6px;
-              object-fit: contain;
+              color: var(--muted);
+              transition: color 0.2s;
             }
+            .search:focus-within .search-icon { color: var(--accent); }
             input {
               flex: 1;
               min-width: 0;
-              height: 66px;
+              height: 70px;
               border: 0;
               outline: 0;
               background: transparent;
               color: var(--text);
-              font-size: 18px;
-              font-weight: 600;
+              font-size: 19px;
+              font-weight: 550;
             }
-            input::placeholder { color: var(--muted); }
+            input::placeholder { color: color-mix(in srgb, var(--muted) 85%, transparent); }
+            .engine-pick {
+              position: relative;
+              flex: none;
+              display: flex;
+              align-items: center;
+              gap: 7px;
+              height: 46px;
+              padding: 0 28px 0 13px;
+              border: 1px solid var(--line);
+              border-radius: 15px;
+              background: color-mix(in srgb, var(--panel-strong) 52%, transparent);
+              cursor: pointer;
+              transition: border-color 0.16s, background 0.16s;
+            }
+            .engine-pick:hover {
+              border-color: color-mix(in srgb, var(--accent) 48%, var(--line));
+              background: color-mix(in srgb, var(--accent) 8%, var(--panel-strong));
+            }
+            .engine-pick::after {
+              content: "";
+              position: absolute;
+              right: 13px;
+              top: 50%;
+              width: 6px;
+              height: 6px;
+              border-right: 1.5px solid var(--muted);
+              border-bottom: 1.5px solid var(--muted);
+              transform: translateY(-62%) rotate(45deg);
+              pointer-events: none;
+            }
+            .engine-pick img {
+              width: 20px;
+              height: 20px;
+              border-radius: 5px;
+              object-fit: contain;
+            }
+            .engine-pick select {
+              position: absolute;
+              inset: 0;
+              width: 100%;
+              height: 100%;
+              opacity: 0;
+              cursor: pointer;
+              appearance: none;
+              -webkit-appearance: none;
+              border: 0;
+            }
             button {
               flex: none;
               border: 0;
               min-height: 52px;
               padding: 0 28px;
-              border-radius: 999px;
+              border-radius: 16px;
               color: #071015;
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
               font-size: 15px;
               font-weight: 800;
               cursor: pointer;
+              box-shadow: 0 8px 22px color-mix(in srgb, var(--accent) 30%, transparent);
               transition: transform 0.15s, filter 0.15s;
             }
             button:hover { filter: brightness(1.06); transform: scale(1.03); }
@@ -7355,17 +7404,17 @@ private enum HomePage {
             </section>
             <section class="command" aria-label="Поиск">
               <form class="search" id="searchForm">
-                <img class="search-logo" id="engineLogo" src="\(engineLogo)" alt="" width="22" height="22">
-                <input id="query" name="q" autofocus autocomplete="off" placeholder="Поиск в \(engine) или адрес сайта">
-                <button type="submit">Найти</button>
-              </form>
-              <div class="filters" aria-label="Настройки поиска">
-                <label class="filter">
-                  <span>Движок</span>
+                <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.5-4.5"/></svg>
+                <input id="query" name="q" autofocus autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="search" placeholder="Поиск в \(engine) или адрес сайта">
+                <label class="engine-pick" title="Поисковая система">
+                  <img id="engineLogo" src="\(engineLogo)" alt="" width="20" height="20">
                   <select id="engine" name="engine" aria-label="Поисковая система">
                     \(engineOptions)
                   </select>
                 </label>
+                <button type="submit">Найти</button>
+              </form>
+              <div class="filters" aria-label="Настройки поиска">
                 <label class="filter">
                   <span>Регион</span>
                   <select id="region" name="region" aria-label="Регион поиска">
