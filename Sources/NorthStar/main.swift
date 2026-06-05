@@ -6880,6 +6880,151 @@ private enum HomePage {
               input, button { min-height: 50px; }
               .quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             }
+            /* UI mockup pass: compact browser dashboard, not a landing page. */
+            :root {
+              --radius: 8px;
+              --page-width: min(1180px, \(palette.pageWidth));
+            }
+            body::before {
+              opacity: calc(var(--home-overlay-opacity) * 0.45);
+              mask-image: none;
+            }
+            body::after { display: none; }
+            main {
+              width: min(var(--page-width), calc(100vw - 48px));
+              gap: 16px;
+              margin: 28px auto 44px;
+            }
+            .hero {
+              grid-template-columns: auto minmax(0, 1fr) auto;
+              gap: 12px;
+              min-height: 58px;
+              align-items: center;
+              padding: 0 0 12px;
+              border-bottom: 1px solid var(--line);
+            }
+            .hero::after {
+              content: "\(engine) · \(region) · \(language)";
+              min-height: 32px;
+              display: inline-flex;
+              align-items: center;
+              border: 1px solid var(--line);
+              border-radius: 999px;
+              padding: 0 11px;
+              color: var(--muted);
+              background: color-mix(in srgb, var(--panel) 82%, transparent);
+              font-size: 12px;
+              font-weight: 760;
+              white-space: nowrap;
+            }
+            .brand-chip {
+              width: 32px;
+              height: 32px;
+              border-radius: var(--radius);
+              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
+              font-size: 11px;
+            }
+            h1 {
+              font-size: 26px;
+              line-height: 1.1;
+              font-weight: 820;
+            }
+            .kicker { display: none; }
+            .sub {
+              margin-top: 3px;
+              font-size: 12px;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            }
+            .command,
+            .panel {
+              border-radius: var(--radius);
+              box-shadow: 0 14px 34px color-mix(in srgb, var(--shadow) 70%, transparent);
+            }
+            .command {
+              gap: 12px;
+              padding: 14px;
+              background: color-mix(in srgb, var(--panel) 90%, transparent);
+            }
+            .search { grid-template-columns: minmax(0, 1fr) 112px; }
+            input {
+              min-height: 56px;
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+              background: color-mix(in srgb, var(--panel-strong) 64%, transparent);
+              font-size: 16px;
+              font-weight: 680;
+            }
+            input:focus {
+              border-color: color-mix(in srgb, var(--accent) 68%, var(--line));
+              box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+            }
+            button {
+              min-width: 112px;
+              min-height: 56px;
+              border-radius: var(--radius);
+              padding: 0 16px;
+            }
+            .filter {
+              min-height: 50px;
+              align-content: center;
+              border-radius: var(--radius);
+              border-color: var(--line);
+              padding: 8px 36px 8px 12px;
+            }
+            .filter::after {
+              top: 50%;
+              bottom: auto;
+              transform: translateY(-62%) rotate(45deg);
+            }
+            .dashboard {
+              grid-template-columns: minmax(0, 1fr) 360px;
+              gap: 16px;
+            }
+            .stack { gap: 16px; }
+            .panel {
+              gap: 0;
+              padding: 0;
+              overflow: hidden;
+            }
+            .panel-head {
+              min-height: 50px;
+              padding: 0 14px;
+              border-bottom: 1px solid var(--line);
+            }
+            .panel h2 {
+              font-size: 15px;
+              font-weight: 820;
+            }
+            .quick,
+            .actions,
+            .recent { padding: 12px; }
+            .quick-link,
+            .action-link,
+            .recent-item { border-radius: var(--radius); }
+            .quick-link {
+              min-height: 62px;
+              padding: 12px;
+            }
+            .action-link {
+              min-height: 58px;
+              display: grid;
+              grid-template-columns: minmax(0, 1fr) auto;
+              gap: 12px;
+            }
+            .recent { max-height: 558px; }
+            @media (max-width: 980px) {
+              .hero { grid-template-columns: auto minmax(0, 1fr); }
+              .hero::after { grid-column: 1 / -1; justify-self: start; }
+              .dashboard { grid-template-columns: 1fr; }
+            }
+            @media (max-width: 720px) {
+              main { width: min(var(--page-width), calc(100vw - 28px)); margin-top: 20px; }
+              .search,
+              .filters { grid-template-columns: 1fr; }
+              .quick { grid-template-columns: 1fr; }
+            }
           </style>
         </head>
         <body>
@@ -6888,8 +7033,8 @@ private enum HomePage {
               <div class="brand-chip">NS</div>
               <div>
                 <p class="kicker">Браузер NorthStar</p>
-                <h1>Быстрый старт</h1>
-                <p class="sub">Поиск, сайты, настройки и последние страницы в одном спокойном рабочем экране.</p>
+                <h1>Новая вкладка</h1>
+                <p class="sub">Поиск, быстрые ссылки, инструменты и недавние страницы.</p>
               </div>
             </section>
             <section class="command" aria-label="Поиск">
@@ -7528,6 +7673,145 @@ private enum SettingsPage {
               .overview-grid, .control-grid { grid-template-columns: 1fr; }
               .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
               time, .status, .row-meta { justify-self: start; justify-items: start; }
+            }
+            /* UI mockup pass: browser-like settings with a quiet sidebar and row groups. */
+            :root {
+              --radius: 8px;
+              --settings-width: min(980px, \(palette.settingsWidth));
+            }
+            body { background: var(--bg); }
+            .settings-shell { grid-template-columns: 220px minmax(0, 1fr); }
+            .sidebar {
+              gap: 14px;
+              background: color-mix(in srgb, var(--panel-strong) 82%, var(--bg));
+              padding: 14px 10px;
+            }
+            .brand {
+              min-height: 52px;
+              justify-content: center;
+              padding: 4px 10px 13px;
+            }
+            .brand strong {
+              font-size: 18px;
+              letter-spacing: 0;
+            }
+            .brand span,
+            .nav-item span { display: none; }
+            .nav { gap: 4px; }
+            .nav-item {
+              min-height: 42px;
+              display: flex;
+              align-items: center;
+              border-radius: var(--radius);
+              padding: 0 11px;
+            }
+            .nav-item strong {
+              font-size: 14px;
+              font-weight: 760;
+            }
+            .content {
+              padding: 28px 32px 42px;
+              background:
+                linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 22%, transparent), transparent 220px),
+                var(--bg);
+            }
+            .panel {
+              width: min(var(--settings-width), 100%);
+              gap: 14px;
+            }
+            .panel-head {
+              border: 0;
+              border-bottom: 1px solid var(--line);
+              border-radius: 0;
+              background: transparent;
+              box-shadow: none;
+              padding: 0 0 14px;
+            }
+            h1 {
+              font-size: 26px;
+              line-height: 1.1;
+              font-weight: 820;
+            }
+            h3 {
+              font-size: 14px;
+              font-weight: 780;
+            }
+            .control-grid {
+              grid-template-columns: 1fr;
+              gap: 8px;
+            }
+            .overview-grid {
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+              gap: 10px;
+            }
+            .overview-card,
+            .setting-card,
+            .metric,
+            .list-row {
+              border-radius: var(--radius);
+              box-shadow: none;
+              background: color-mix(in srgb, var(--panel) 92%, transparent);
+            }
+            .overview-card {
+              min-height: 74px;
+              padding: 12px 14px;
+            }
+            .setting-card {
+              min-height: 62px;
+              padding: 10px 14px;
+              align-content: center;
+            }
+            .setting-card label {
+              grid-template-columns: minmax(0, 1fr) minmax(220px, 320px);
+              align-items: center;
+              gap: 16px;
+            }
+            label span {
+              font-size: 13px;
+              text-transform: none;
+              color: var(--text);
+            }
+            select,
+            input {
+              min-height: 38px;
+              border-radius: var(--radius);
+              font-size: 13px;
+            }
+            .setting-card:has(.button) {
+              grid-template-columns: minmax(0, 1fr) auto;
+              align-items: center;
+              gap: 16px;
+            }
+            .setting-card:has(.button) h3,
+            .setting-card:has(.button) p {
+              grid-column: 1;
+            }
+            .setting-card:has(.button) .button {
+              grid-column: 2;
+              grid-row: 1 / span 2;
+            }
+            .button {
+              min-height: 38px;
+              border-radius: var(--radius);
+              white-space: nowrap;
+            }
+            .metric-grid { gap: 8px; }
+            .metric { min-height: 72px; }
+            .list { gap: 6px; }
+            .list-row { min-height: 54px; }
+            @media (max-width: 860px) {
+              .settings-shell { grid-template-columns: 1fr; }
+              .sidebar { position: static; height: auto; }
+              .nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+              .content { padding: 22px 16px 34px; }
+              .overview-grid,
+              .setting-card label,
+              .setting-card:has(.button) { grid-template-columns: 1fr; }
+              .setting-card:has(.button) .button {
+                grid-column: 1;
+                grid-row: auto;
+                justify-self: start;
+              }
             }
           </style>
         </head>
