@@ -1188,7 +1188,7 @@ private final class BrowserViewController: NSViewController {
             addressField.leadingAnchor.constraint(equalTo: readerButton.trailingAnchor, constant: 12),
             addressField.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -12),
             addressField.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-            addressField.heightAnchor.constraint(equalToConstant: 30),
+            addressField.heightAnchor.constraint(equalToConstant: 32),
 
             progressIndicator.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor),
             progressIndicator.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor),
@@ -1257,12 +1257,12 @@ private final class BrowserViewController: NSViewController {
         NSLayoutConstraint.activate([
             findBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor, constant: 10),
             findBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor, constant: -14),
-            findBarView.heightAnchor.constraint(equalToConstant: 44),
-            findBarView.widthAnchor.constraint(equalToConstant: 344),
+            findBarView.heightAnchor.constraint(equalToConstant: 46),
+            findBarView.widthAnchor.constraint(equalToConstant: 408),
 
             findField.leadingAnchor.constraint(equalTo: findBarView.leadingAnchor, constant: 10),
             findField.centerYAnchor.constraint(equalTo: findBarView.centerYAnchor),
-            findField.widthAnchor.constraint(equalToConstant: 210),
+            findField.widthAnchor.constraint(equalToConstant: 272),
 
             findPreviousButton.leadingAnchor.constraint(equalTo: findField.trailingAnchor, constant: 6),
             findPreviousButton.centerYAnchor.constraint(equalTo: findBarView.centerYAnchor),
@@ -2310,6 +2310,18 @@ extension BrowserViewController: WKNavigationDelegate {
                 showBlockedURL(url, profile: tab.profile)
             }
             decisionHandler(.cancel)
+            return
+        }
+
+        // Links clicked on internal pages (home, settings, parser, reader) must go
+        // through load() so the tab leaves its internal state: otherwise the address
+        // bar, title, favicon and history stay stuck on the internal page.
+        if let tab = tab(for: webView),
+           tab.isInternalPage,
+           navigationAction.targetFrame?.isMainFrame ?? true,
+           ["http", "https"].contains(scheme) {
+            decisionHandler(.cancel)
+            load(url, in: tab)
             return
         }
 
@@ -7055,18 +7067,21 @@ private enum HomePage {
               animation: rise 0.55s 0.1s ease both;
             }
             .search {
-              width: min(660px, 100%);
+              width: min(820px, 100%);
               display: flex;
               align-items: center;
-              gap: 12px;
-              min-height: 62px;
-              padding: 0 8px 0 20px;
+              gap: 14px;
+              min-height: 68px;
+              padding: 0 9px 0 22px;
               border: 1px solid var(--line);
               border-radius: 999px;
-              background: color-mix(in srgb, var(--panel) 90%, transparent);
+              background: color-mix(in srgb, var(--panel) 92%, transparent);
               box-shadow: 0 24px 60px var(--shadow);
               backdrop-filter: blur(20px);
               transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+            }
+            .search:hover {
+              border-color: color-mix(in srgb, var(--accent) 38%, var(--line));
             }
             .search:focus-within {
               border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
@@ -7074,8 +7089,8 @@ private enum HomePage {
               transform: translateY(-1px);
             }
             .search-logo {
-              width: 22px;
-              height: 22px;
+              width: 24px;
+              height: 24px;
               flex: none;
               border-radius: 6px;
               object-fit: contain;
@@ -7083,24 +7098,24 @@ private enum HomePage {
             input {
               flex: 1;
               min-width: 0;
-              height: 60px;
+              height: 66px;
               border: 0;
               outline: 0;
               background: transparent;
               color: var(--text);
-              font-size: 17px;
+              font-size: 18px;
               font-weight: 600;
             }
             input::placeholder { color: var(--muted); }
             button {
               flex: none;
               border: 0;
-              min-height: 46px;
-              padding: 0 24px;
+              min-height: 52px;
+              padding: 0 28px;
               border-radius: 999px;
               color: #071015;
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
-              font-size: 14px;
+              font-size: 15px;
               font-weight: 800;
               cursor: pointer;
               transition: transform 0.15s, filter 0.15s;
@@ -7320,8 +7335,9 @@ private enum HomePage {
             }
             @media (max-width: 640px) {
               main { width: min(1060px, calc(100vw - 28px)); gap: 20px; }
-              .search { min-height: 56px; padding-left: 16px; }
-              input { height: 54px; font-size: 16px; }
+              .search { min-height: 58px; padding-left: 16px; }
+              input { height: 56px; font-size: 16px; }
+              button { min-height: 46px; padding: 0 20px; }
               .quick { grid-template-columns: 1fr; }
             }
           </style>
@@ -7442,6 +7458,7 @@ private enum SettingsSection: String, CaseIterable {
     case search
     case appearance
     case browser
+    case shortcuts
     case currency
     case performance
     case bookmarks
@@ -7460,6 +7477,8 @@ private enum SettingsSection: String, CaseIterable {
             return "Внешний вид"
         case .browser:
             return "Браузер"
+        case .shortcuts:
+            return "Клавиши"
         case .currency:
             return "Валюты"
         case .performance:
@@ -7483,6 +7502,8 @@ private enum SettingsSection: String, CaseIterable {
             return "Тема, цвета и главный экран"
         case .browser:
             return "Вкладки и блокировка рекламы"
+        case .shortcuts:
+            return "Все сочетания клавиш"
         case .currency:
             return "Курс и конвертация"
         case .performance:
@@ -7506,6 +7527,8 @@ private enum SettingsSection: String, CaseIterable {
             return "🎨"
         case .browser:
             return "🧭"
+        case .shortcuts:
+            return "⌨️"
         case .currency:
             return "💱"
         case .performance:
@@ -7638,6 +7661,64 @@ private enum SettingsPage {
               </span>
               <span class="status \(entry.status.rawValue)">\(entry.status.title.htmlEscaped)</span>
             </div>
+            """
+        }.joined()
+
+        let shortcutGroups: [(title: String, items: [(keys: [String], action: String)])] = [
+            ("Вкладки и окна", [
+                (["⌘", "T"], "Новая вкладка"),
+                (["⌘", "⇧", "N"], "Новая приватная вкладка"),
+                (["⌘", "W"], "Закрыть вкладку"),
+                (["⌘", "⇧", "T"], "Восстановить закрытую вкладку"),
+                (["⌘", "{"], "Предыдущая вкладка"),
+                (["⌘", "}"], "Следующая вкладка"),
+                (["⌘", "N"], "Новое окно"),
+                (["⌘", "⇧", "W"], "Закрыть окно")
+            ]),
+            ("Навигация", [
+                (["⌘", "["], "Назад"),
+                (["⌘", "]"], "Вперёд"),
+                (["⌘", "R"], "Обновить страницу"),
+                (["⌘", "⇧", "R"], "Жёсткое обновление без кэша"),
+                (["⌘", "."], "Остановить загрузку"),
+                (["⌘", "L"], "Фокус на адресную строку")
+            ]),
+            ("Страница", [
+                (["⌘", "F"], "Найти на странице"),
+                (["⌘", "G"], "Найти далее"),
+                (["⌘", "⇧", "G"], "Найти ранее"),
+                (["⌘", "+"], "Увеличить масштаб"),
+                (["⌘", "−"], "Уменьшить масштаб"),
+                (["⌘", "0"], "Реальный размер"),
+                (["⌘", "P"], "Печать"),
+                (["⌘", "⇧", "⌥", "R"], "Режим чтения"),
+                (["⌘", "⌥", "P"], "Парсер страницы"),
+                (["⌘", "⌥", "S"], "Скриншот вкладки")
+            ]),
+            ("Закладки и файлы", [
+                (["⌘", "D"], "Добавить или удалить закладку"),
+                (["⌘", "B"], "Показать все закладки"),
+                (["⌘", "O"], "Открыть файл"),
+                (["⌘", "⇧", "C"], "Скопировать адрес страницы")
+            ]),
+            ("Приложение", [
+                (["⌘", ","], "Настройки"),
+                (["⌘", "Q"], "Завершить NorthStar")
+            ])
+        ]
+        let shortcutsMarkup = shortcutGroups.map { group in
+            let rows = group.items.map { item in
+                let keys = item.keys.map { "<kbd>\($0.htmlEscaped)</kbd>" }.joined()
+                return """
+                <div class="list-row shortcut-row">
+                  <span class="row-copy"><strong>\(item.action.htmlEscaped)</strong></span>
+                  <span class="keys">\(keys)</span>
+                </div>
+                """
+            }.joined()
+            return """
+            <h2 class="group-title">\(group.title.htmlEscaped)</h2>
+            <div class="list">\(rows)</div>
             """
         }.joined()
 
@@ -8054,6 +8135,30 @@ private enum SettingsPage {
               justify-items: end;
             }
             .duration { font-size: 12.5px; }
+            .group-title {
+              margin: 10px 2px 0;
+              color: var(--muted);
+              font-size: 12px;
+              font-weight: 800;
+              letter-spacing: 0.07em;
+              text-transform: uppercase;
+            }
+            .shortcut-row { min-height: 46px; }
+            .keys { flex: none; display: flex; gap: 4px; }
+            kbd {
+              min-width: 26px;
+              height: 26px;
+              display: inline-grid;
+              place-items: center;
+              padding: 0 8px;
+              border: 1px solid var(--line);
+              border-radius: 7px;
+              background: color-mix(in srgb, var(--panel-strong) 70%, transparent);
+              font-family: inherit;
+              font-size: 12px;
+              font-weight: 750;
+              box-shadow: 0 2px 0 color-mix(in srgb, var(--line) 60%, transparent);
+            }
             .setting-card:has(.button) {
               grid-template-columns: minmax(0, 1fr) auto;
               align-items: center;
@@ -8240,6 +8345,16 @@ private enum SettingsPage {
                     <a class="button" href="\(northStarSettingsScheme)://default-pdf">Открывать PDF в NorthStar</a>
                   </div>
                 </div>
+              </section>
+
+              <section class="panel" data-panel="shortcuts" aria-label="Сочетания клавиш">
+                <div class="panel-head">
+                  <div>
+                    <h1>Сочетания клавиш</h1>
+                    <p class="muted">Быстрые команды NorthStar для работы без мыши.</p>
+                  </div>
+                </div>
+                \(shortcutsMarkup)
               </section>
 
               <section class="panel" data-panel="currency" aria-label="Валюты">
