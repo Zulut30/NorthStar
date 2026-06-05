@@ -13,6 +13,9 @@ private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
 
+/// Compact North Star mark from Resources/NorthStarLogo.svg for embedding in internal pages.
+private let brandMarkSVG = ##"<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M512 150L604 382L856 512L604 642L512 874L420 642L168 512L420 382L512 150Z" fill="rgba(255,255,255,0.32)"/><path d="M512 180L558 466L844 512L558 558L512 844L466 558L180 512L466 466L512 180Z" fill="#0b2530" opacity="0.85"/><path d="M512 238L542 482L718 512L542 542L512 786L482 542L306 512L482 482L512 238Z" fill="#ffffff"/><circle cx="512" cy="512" r="34" fill="#0b2530"/><circle cx="512" cy="512" r="13" fill="#ffffff"/></svg>"##
+
 @main
 private enum NorthStarApplication {
     private static var retainedDelegate: AppDelegate?
@@ -165,6 +168,17 @@ private final class BrowserViewController: NSViewController {
     private let networkPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let progressIndicator = NSProgressIndicator()
 
+    private let brandLogoView = NSImageView()
+    private let toolbarTintView = GradientTintView()
+    private let toolbarSeparatorView = NSView()
+    private let tabBarTintView = GradientTintView()
+
+    private let findBarView = NSVisualEffectView()
+    private let findField = NSSearchField()
+    private let findPreviousButton = IconButton(symbolName: "chevron.up", tooltip: "Найти ранее", width: 26, height: 24)
+    private let findNextButton = IconButton(symbolName: "chevron.down", tooltip: "Найти далее", width: 26, height: 24)
+    private let findCloseButton = IconButton(symbolName: "xmark", tooltip: "Закрыть поиск", width: 26, height: 24)
+
     private weak var screenshotEffectView: NSView?
     private var screenshotSound: NSSound?
     private var placementConstraints: [NSLayoutConstraint] = []
@@ -178,6 +192,7 @@ private final class BrowserViewController: NSViewController {
     private var defaultAppStatusMessage: String?
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
+    private var recentlyClosedTabs: [(url: URL, profile: NetworkProfile)] = []
 
     private var activeTab: BrowserTab? {
         tabs.first { $0.id == activeTabID }
@@ -222,9 +237,10 @@ private final class BrowserViewController: NSViewController {
         configureLayout()
         configureTabBar()
         configureToolbar()
+        configureFindBar()
         observePreferences()
         applyPreferences(redrawHomeTabs: false)
-        addTab(profile: .system, url: nil, activate: true)
+        restoreSession()
     }
 
     @objc func newTabCommand(_ sender: Any?) {
@@ -368,6 +384,171 @@ private final class BrowserViewController: NSViewController {
     @objc func focusLocation(_ sender: Any?) {
         view.window?.makeFirstResponder(addressField)
         addressField.currentEditor()?.selectAll(nil)
+    }
+
+    @objc func findOnPageCommand(_ sender: Any?) {
+        findBarView.isHidden = false
+        view.window?.makeFirstResponder(findField)
+        findField.currentEditor()?.selectAll(nil)
+    }
+
+    @objc func findNextCommand(_ sender: Any?) {
+        if findBarView.isHidden {
+            findOnPageCommand(sender)
+            return
+        }
+        performFind(backwards: false)
+    }
+
+    @objc func findPreviousCommand(_ sender: Any?) {
+        if findBarView.isHidden {
+            findOnPageCommand(sender)
+            return
+        }
+        performFind(backwards: true)
+    }
+
+    @objc private func findFieldAction(_ sender: Any?) {
+        guard !findField.stringValue.isEmpty else { return }
+        performFind(backwards: false)
+    }
+
+    @objc private func closeFindBarCommand(_ sender: Any?) {
+        closeFindBar()
+    }
+
+    private func closeFindBar() {
+        guard !findBarView.isHidden else { return }
+        findBarView.isHidden = true
+        activeTab?.webView.evaluateJavaScript("window.getSelection()?.removeAllRanges?.();", completionHandler: nil)
+        if let webView = activeTab?.webView {
+            view.window?.makeFirstResponder(webView)
+        }
+    }
+
+    private func performFind(backwards: Bool) {
+        let query = findField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty, let webView = activeTab?.webView else { return }
+
+        let configuration = WKFindConfiguration()
+        configuration.backwards = backwards
+        configuration.caseSensitive = false
+        configuration.wraps = true
+        webView.find(query, configuration: configuration) { result in
+            if !result.matchFound {
+                NSSound.beep()
+            }
+        }
+    }
+
+    @objc func zoomInCommand(_ sender: Any?) {
+        adjustZoom(by: 0.1)
+    }
+
+    @objc func zoomOutCommand(_ sender: Any?) {
+        adjustZoom(by: -0.1)
+    }
+
+    @objc func resetZoomCommand(_ sender: Any?) {
+        activeTab?.webView.pageZoom = 1
+    }
+
+    private func adjustZoom(by delta: CGFloat) {
+        guard let webView = activeTab?.webView else { return }
+        webView.pageZoom = min(3, max(0.5, webView.pageZoom + delta))
+    }
+
+    @objc func stopLoadingCommand(_ sender: Any?) {
+        activeTab?.webView.stopLoading()
+        syncToolbar()
+    }
+
+    @objc func printPageCommand(_ sender: Any?) {
+        guard let tab = activeTab else { NSSound.beep(); return }
+
+        let printInfo = NSPrintInfo.shared
+        printInfo.horizontalPagination = .automatic
+        printInfo.verticalPagination = .automatic
+        printInfo.isHorizontallyCentered = true
+        printInfo.isVerticallyCentered = false
+
+        let operation = tab.webView.printOperation(with: printInfo)
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        operation.view?.frame = tab.webView.bounds
+        if let window = view.window {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
+        }
+    }
+
+    @objc func openFileCommand(_ sender: Any?) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Выберите файл для открытия в \(appName)"
+
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        let tab = activeTab.flatMap { $0.isShowingHome ? $0 : nil }
+        if let tab {
+            tab.loadFile(fileURL)
+        } else {
+            let newTab = makeTab(profile: activeTab?.profile ?? .system)
+            tabs.append(newTab)
+            activeTabID = newTab.id
+            showActiveTab()
+            renderTabs()
+            syncToolbar()
+            newTab.loadFile(fileURL)
+        }
+    }
+
+    @objc func copyAddressCommand(_ sender: Any?) {
+        guard let url = activeTab?.url ?? activeTab?.webView.url else { NSSound.beep(); return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+    }
+
+    @objc func duplicateTabCommand(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+        let targetURL = tab.isBrowsablePage ? (tab.url ?? tab.webView.url) : nil
+        addTab(profile: tab.profile, url: targetURL, activate: true)
+    }
+
+    @objc func reopenClosedTabCommand(_ sender: Any?) {
+        guard let entry = recentlyClosedTabs.popLast() else { NSSound.beep(); return }
+        addTab(profile: entry.profile, url: entry.url, activate: true)
+    }
+
+    private static var hasRestoredSession = false
+    private static let sessionKey = "northstar.session.tabs"
+
+    private func saveSession() {
+        let urls = tabs
+            .filter { $0.profile == .system && $0.isBrowsablePage }
+            .compactMap { ($0.url ?? $0.webView.url)?.absoluteString }
+        UserDefaults.standard.set(urls, forKey: Self.sessionKey)
+    }
+
+    private func restoreSession() {
+        guard !Self.hasRestoredSession else {
+            addTab(profile: .system, url: nil, activate: true)
+            return
+        }
+
+        Self.hasRestoredSession = true
+        let urls = (UserDefaults.standard.array(forKey: Self.sessionKey) as? [String] ?? [])
+            .compactMap(URL.init(string:))
+
+        guard !urls.isEmpty else {
+            addTab(profile: .system, url: nil, activate: true)
+            return
+        }
+
+        for (index, url) in urls.prefix(12).enumerated() {
+            addTab(profile: .system, url: url, activate: index == 0)
+        }
     }
 
     @objc func showSettingsCommand(_ sender: Any?) {
@@ -812,10 +993,18 @@ private final class BrowserViewController: NSViewController {
 
         tabScrollView.documentView = tabStack
 
+        tabBarView.addSubview(tabBarTintView)
         tabBarView.addSubview(tabBarHeaderView)
         tabBarView.addSubview(tabScrollView)
         tabBarHeaderView.addSubview(tabBarTitle)
         tabBarHeaderView.addSubview(newTabButton)
+
+        NSLayoutConstraint.activate([
+            tabBarTintView.topAnchor.constraint(equalTo: tabBarView.topAnchor),
+            tabBarTintView.leadingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
+            tabBarTintView.trailingAnchor.constraint(equalTo: tabBarView.trailingAnchor),
+            tabBarTintView.bottomAnchor.constraint(equalTo: tabBarView.bottomAnchor)
+        ])
     }
 
     private func configureToolbar() {
@@ -824,8 +1013,19 @@ private final class BrowserViewController: NSViewController {
         toolbarView.blendingMode = .withinWindow
         toolbarView.state = .active
 
+        toolbarSeparatorView.translatesAutoresizingMaskIntoConstraints = false
+        toolbarSeparatorView.wantsLayer = true
+
+        brandLogoView.translatesAutoresizingMaskIntoConstraints = false
+        brandLogoView.image = NSApp.applicationIconImage
+        brandLogoView.imageScaling = .scaleProportionallyUpOrDown
+        brandLogoView.wantsLayer = true
+        brandLogoView.layer?.cornerRadius = 7
+        brandLogoView.layer?.masksToBounds = true
+        brandLogoView.toolTip = appName
+
         brandTitleField.translatesAutoresizingMaskIntoConstraints = false
-        brandTitleField.font = .systemFont(ofSize: 18, weight: .bold)
+        brandTitleField.font = .systemFont(ofSize: 16, weight: .bold)
         brandTitleField.lineBreakMode = .byTruncatingTail
         brandTitleField.setContentCompressionResistancePriority(.required, for: .horizontal)
 
@@ -912,7 +1112,8 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
+        toolbarView.addSubview(toolbarTintView)
+        [toolbarSeparatorView, brandLogoView, brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -930,9 +1131,23 @@ private final class BrowserViewController: NSViewController {
             webContainerView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
             webContainerView.bottomAnchor.constraint(equalTo: browserContentView.bottomAnchor),
 
-            brandTitleField.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor, constant: 16),
+            toolbarTintView.topAnchor.constraint(equalTo: toolbarView.topAnchor),
+            toolbarTintView.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor),
+            toolbarTintView.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor),
+            toolbarTintView.bottomAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+
+            toolbarSeparatorView.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor),
+            toolbarSeparatorView.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor),
+            toolbarSeparatorView.bottomAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+            toolbarSeparatorView.heightAnchor.constraint(equalToConstant: 1),
+
+            brandLogoView.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor, constant: 14),
+            brandLogoView.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
+            brandLogoView.widthAnchor.constraint(equalToConstant: 26),
+            brandLogoView.heightAnchor.constraint(equalToConstant: 26),
+
+            brandTitleField.leadingAnchor.constraint(equalTo: brandLogoView.trailingAnchor, constant: 9),
             brandTitleField.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
-            brandTitleField.widthAnchor.constraint(greaterThanOrEqualToConstant: 94),
 
             backButton.leadingAnchor.constraint(equalTo: brandTitleField.trailingAnchor, constant: 16),
             backButton.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
@@ -1006,13 +1221,84 @@ private final class BrowserViewController: NSViewController {
         syncToolbar()
     }
 
+    private func configureFindBar() {
+        findBarView.translatesAutoresizingMaskIntoConstraints = false
+        findBarView.material = .menu
+        findBarView.blendingMode = .withinWindow
+        findBarView.state = .active
+        findBarView.wantsLayer = true
+        findBarView.layer?.cornerRadius = 12
+        findBarView.layer?.borderWidth = 1
+        findBarView.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.4).cgColor
+        findBarView.layer?.masksToBounds = true
+        findBarView.isHidden = true
+
+        findField.translatesAutoresizingMaskIntoConstraints = false
+        findField.placeholderString = "Найти на странице"
+        findField.font = .systemFont(ofSize: 13)
+        findField.target = self
+        findField.action = #selector(findFieldAction(_:))
+        findField.delegate = self
+        findField.sendsWholeSearchString = true
+        findField.sendsSearchStringImmediately = false
+
+        findPreviousButton.target = self
+        findPreviousButton.action = #selector(findPreviousCommand(_:))
+        findNextButton.target = self
+        findNextButton.action = #selector(findNextCommand(_:))
+        findCloseButton.target = self
+        findCloseButton.action = #selector(closeFindBarCommand(_:))
+
+        browserContentView.addSubview(findBarView)
+        [findField, findPreviousButton, findNextButton, findCloseButton].forEach {
+            findBarView.addSubview($0)
+        }
+
+        NSLayoutConstraint.activate([
+            findBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor, constant: 10),
+            findBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor, constant: -14),
+            findBarView.heightAnchor.constraint(equalToConstant: 44),
+            findBarView.widthAnchor.constraint(equalToConstant: 344),
+
+            findField.leadingAnchor.constraint(equalTo: findBarView.leadingAnchor, constant: 10),
+            findField.centerYAnchor.constraint(equalTo: findBarView.centerYAnchor),
+            findField.widthAnchor.constraint(equalToConstant: 210),
+
+            findPreviousButton.leadingAnchor.constraint(equalTo: findField.trailingAnchor, constant: 6),
+            findPreviousButton.centerYAnchor.constraint(equalTo: findBarView.centerYAnchor),
+
+            findNextButton.leadingAnchor.constraint(equalTo: findPreviousButton.trailingAnchor, constant: 2),
+            findNextButton.centerYAnchor.constraint(equalTo: findBarView.centerYAnchor),
+
+            findCloseButton.leadingAnchor.constraint(equalTo: findNextButton.trailingAnchor, constant: 6),
+            findCloseButton.centerYAnchor.constraint(equalTo: findBarView.centerYAnchor),
+            findCloseButton.trailingAnchor.constraint(lessThanOrEqualTo: findBarView.trailingAnchor, constant: -8)
+        ])
+    }
+
     private func applyChromeTheme() {
         let colors = ChromePalette(theme: preferences.theme, colorScheme: preferences.colorScheme)
+        let accent = NSColor(hex: preferences.colorScheme.accent) ?? .controlAccentColor
         view.layer?.backgroundColor = colors.window.cgColor
         browserContentView.layer?.backgroundColor = colors.window.cgColor
         webContainerView.layer?.backgroundColor = colors.webBackground.cgColor
         brandTitleField.textColor = colors.brand
         tabBarTitle.textColor = colors.secondaryText
+
+        toolbarTintView.gradientLayer?.colors = [
+            accent.withAlphaComponent(0.14).cgColor,
+            accent.withAlphaComponent(0.03).cgColor
+        ]
+        toolbarTintView.gradientLayer?.startPoint = CGPoint(x: 0, y: 0.5)
+        toolbarTintView.gradientLayer?.endPoint = CGPoint(x: 1, y: 0.5)
+        toolbarSeparatorView.layer?.backgroundColor = accent.withAlphaComponent(0.22).cgColor
+
+        tabBarTintView.gradientLayer?.colors = [
+            accent.withAlphaComponent(0.10).cgColor,
+            accent.withAlphaComponent(0.02).cgColor
+        ]
+        tabBarTintView.gradientLayer?.startPoint = CGPoint(x: 0, y: 0)
+        tabBarTintView.gradientLayer?.endPoint = CGPoint(x: 1, y: 1)
     }
 
     private func applyTabPlacement(_ placement: TabPlacement) {
@@ -1215,6 +1501,12 @@ private final class BrowserViewController: NSViewController {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let closingActiveTab = activeTabID == id
         let tab = tabs.remove(at: index)
+        if tab.isBrowsablePage, !tab.profile.isPrivateMode, let closedURL = tab.url ?? tab.webView.url {
+            recentlyClosedTabs.append((url: closedURL, profile: tab.profile))
+            if recentlyClosedTabs.count > 20 {
+                recentlyClosedTabs.removeFirst()
+            }
+        }
         tab.close()
         tab.webView.removeFromSuperview()
 
@@ -1247,6 +1539,7 @@ private final class BrowserViewController: NSViewController {
     private func activateTab(id: UUID) {
         guard activeTabID != id else { return }
         hideAddressSuggestions()
+        closeFindBar()
         activeTabID = id
         showActiveTab()
         renderTabs()
@@ -1304,6 +1597,7 @@ private final class BrowserViewController: NSViewController {
 
         tabScrollView.contentView.scroll(to: .zero)
         tabScrollView.reflectScrolledClipView(tabScrollView.contentView)
+        saveSession()
     }
 
     private func tabStateDidChange(_ tab: BrowserTab) {
@@ -1873,13 +2167,26 @@ private final class BrowserViewController: NSViewController {
     }
 }
 
-extension BrowserViewController: NSTextFieldDelegate {
+extension BrowserViewController: NSSearchFieldDelegate {
     func controlTextDidChange(_ obj: Notification) {
         guard (obj.object as? NSTextField) === addressField else { return }
         updateAddressSuggestions()
     }
 
     func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if control === findField {
+            switch commandSelector {
+            case #selector(NSResponder.cancelOperation(_:)):
+                closeFindBar()
+                return true
+            case #selector(NSResponder.insertNewline(_:)):
+                performFind(backwards: NSEvent.modifierFlags.contains(.shift))
+                return true
+            default:
+                return false
+            }
+        }
+
         guard control === addressField else { return false }
 
         switch commandSelector {
@@ -2109,7 +2416,7 @@ private final class BrowserTab {
     private(set) var title = appName
     private(set) var url: URL?
     private(set) var progress = 1.0
-    private(set) var faviconImage: NSImage? = NSImage(systemSymbolName: "sparkles", accessibilityDescription: appName)
+    private(set) var faviconImage: NSImage? = BrowserTab.appLogoIcon()
     private(set) var isShowingHome = true
     private(set) var isShowingSettings = false
     private(set) var isShowingParser = false
@@ -2165,6 +2472,15 @@ private final class BrowserTab {
         bindWebViewState()
     }
 
+    static func appLogoIcon() -> NSImage? {
+        guard let icon = NSApp.applicationIconImage?.copy() as? NSImage else {
+            return NSImage(systemSymbolName: "sparkles", accessibilityDescription: appName)
+        }
+
+        icon.size = NSSize(width: 17, height: 17)
+        return icon
+    }
+
     func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry]) {
         isShowingHome = true
         isShowingSettings = false
@@ -2177,8 +2493,9 @@ private final class BrowserTab {
         progress = 1
         faviconTask?.cancel()
         faviconCacheKey = nil
-        let homeSymbol = profile.isPrivateMode ? "eye.slash" : "sparkles"
-        faviconImage = NSImage(systemSymbolName: homeSymbol, accessibilityDescription: appName)
+        faviconImage = profile.isPrivateMode
+            ? NSImage(systemSymbolName: "eye.slash", accessibilityDescription: appName)
+            : Self.appLogoIcon()
         notifyChanged()
         webView.loadHTMLString(
             HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory, bookmarks: bookmarks),
@@ -2259,6 +2576,23 @@ private final class BrowserTab {
         updateFaviconFromCache(for: url)
         notifyChanged()
         webView.load(URLRequest(url: url))
+    }
+
+    func loadFile(_ fileURL: URL) {
+        isShowingHome = false
+        isShowingSettings = false
+        isShowingParser = false
+        isShowingReader = false
+        parserSnapshot = nil
+        readerSnapshot = nil
+        url = fileURL
+        title = fileURL.lastPathComponent
+        progress = 0
+        faviconTask?.cancel()
+        faviconCacheKey = nil
+        faviconImage = NSImage(systemSymbolName: "doc", accessibilityDescription: fileURL.lastPathComponent)
+        notifyChanged()
+        webView.loadFileURL(fileURL, allowingReadAccessTo: fileURL.deletingLastPathComponent())
     }
 
     func close() {
@@ -5759,6 +6093,24 @@ private final class FlippedStackView: NSStackView {
 }
 
 @MainActor
+private final class GradientTintView: NSView {
+    var gradientLayer: CAGradientLayer? { layer as? CAGradientLayer }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+        wantsLayer = true
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func makeBackingLayer() -> CALayer {
+        CAGradientLayer()
+    }
+}
+
 private final class TabRowView: NSView {
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
@@ -6643,6 +6995,11 @@ private enum HomePage {
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
               box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent), inset 0 0 0 1px rgba(255,255,255,0.25);
             }
+            .brand-mark svg {
+              width: 22px;
+              height: 22px;
+              display: block;
+            }
             .chip {
               display: inline-flex;
               align-items: center;
@@ -6972,7 +7329,7 @@ private enum HomePage {
         <body>
           <main>
             <header class="topbar" aria-label="NorthStar">
-              <div class="brand"><span class="brand-mark">NS</span> NorthStar</div>
+              <div class="brand"><span class="brand-mark">\(brandMarkSVG)</span> NorthStar</div>
               <a class="chip" href="\(northStarSettingsScheme)://home">Настройки</a>
             </header>
             <section class="hero" aria-label="Время">
@@ -7387,6 +7744,11 @@ private enum SettingsPage {
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
               box-shadow: 0 6px 16px color-mix(in srgb, var(--accent) 35%, transparent), inset 0 0 0 1px rgba(255,255,255,0.25);
             }
+            .brand-mark svg {
+              width: 24px;
+              height: 24px;
+              display: block;
+            }
             .brand div { display: grid; gap: 1px; min-width: 0; }
             .brand strong { font-size: 15px; line-height: 1.1; }
             .brand span { color: var(--muted); font-size: 11.5px; }
@@ -7732,7 +8094,7 @@ private enum SettingsPage {
           <main class="settings-shell">
             <aside class="sidebar" aria-label="Разделы настроек">
               <div class="brand">
-                <span class="brand-mark">NS</span>
+                <span class="brand-mark">\(brandMarkSVG)</span>
                 <div>
                   <strong>\(settingsTitle)</strong>
                   <span>\(appName)</span>
@@ -8134,9 +8496,16 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     fileMenu.addItem(withTitle: "Новая вкладка", action: #selector(BrowserViewController.newTabCommand(_:)), keyEquivalent: "t")
     let privateTab = fileMenu.addItem(withTitle: "Новая приватная вкладка", action: #selector(BrowserViewController.newPrivateTabCommand(_:)), keyEquivalent: "n")
     privateTab.keyEquivalentModifierMask = [.command, .shift]
+    fileMenu.addItem(withTitle: "Открыть файл...", action: #selector(BrowserViewController.openFileCommand(_:)), keyEquivalent: "o")
+    fileMenu.addItem(.separator())
+    fileMenu.addItem(withTitle: "Дублировать вкладку", action: #selector(BrowserViewController.duplicateTabCommand(_:)), keyEquivalent: "")
+    let reopenTab = fileMenu.addItem(withTitle: "Восстановить закрытую вкладку", action: #selector(BrowserViewController.reopenClosedTabCommand(_:)), keyEquivalent: "t")
+    reopenTab.keyEquivalentModifierMask = [.command, .shift]
     fileMenu.addItem(withTitle: "Закрыть вкладку", action: #selector(BrowserViewController.closeTabCommand(_:)), keyEquivalent: "w")
     let closeWindow = fileMenu.addItem(withTitle: "Закрыть окно", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
     closeWindow.keyEquivalentModifierMask = [.command, .shift]
+    fileMenu.addItem(.separator())
+    fileMenu.addItem(withTitle: "Печать...", action: #selector(BrowserViewController.printPageCommand(_:)), keyEquivalent: "p")
     fileItem.submenu = fileMenu
     mainMenu.addItem(fileItem)
 
@@ -8149,6 +8518,14 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     editMenu.addItem(withTitle: "Копировать", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
     editMenu.addItem(withTitle: "Вставить", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
     editMenu.addItem(withTitle: "Выбрать всё", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editMenu.addItem(.separator())
+    editMenu.addItem(withTitle: "Найти на странице...", action: #selector(BrowserViewController.findOnPageCommand(_:)), keyEquivalent: "f")
+    editMenu.addItem(withTitle: "Найти далее", action: #selector(BrowserViewController.findNextCommand(_:)), keyEquivalent: "g")
+    let findPrevious = editMenu.addItem(withTitle: "Найти ранее", action: #selector(BrowserViewController.findPreviousCommand(_:)), keyEquivalent: "g")
+    findPrevious.keyEquivalentModifierMask = [.command, .shift]
+    editMenu.addItem(.separator())
+    let copyAddress = editMenu.addItem(withTitle: "Скопировать адрес страницы", action: #selector(BrowserViewController.copyAddressCommand(_:)), keyEquivalent: "c")
+    copyAddress.keyEquivalentModifierMask = [.command, .shift]
     editItem.submenu = editMenu
     mainMenu.addItem(editItem)
 
@@ -8166,8 +8543,13 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     viewMenu.addItem(withTitle: "Обновить", action: #selector(BrowserViewController.reloadCommand(_:)), keyEquivalent: "r")
     let hardReloadItem = viewMenu.addItem(withTitle: "Жёсткое обновление без кэша", action: #selector(BrowserViewController.hardReloadCommand(_:)), keyEquivalent: "r")
     hardReloadItem.keyEquivalentModifierMask = [.command, .shift]
+    viewMenu.addItem(withTitle: "Остановить загрузку", action: #selector(BrowserViewController.stopLoadingCommand(_:)), keyEquivalent: ".")
     let readerItem = viewMenu.addItem(withTitle: "Режим чтения", action: #selector(BrowserViewController.openReaderCommand(_:)), keyEquivalent: "r")
     readerItem.keyEquivalentModifierMask = [.command, .shift, .option]
+    viewMenu.addItem(.separator())
+    viewMenu.addItem(withTitle: "Увеличить", action: #selector(BrowserViewController.zoomInCommand(_:)), keyEquivalent: "=")
+    viewMenu.addItem(withTitle: "Уменьшить", action: #selector(BrowserViewController.zoomOutCommand(_:)), keyEquivalent: "-")
+    viewMenu.addItem(withTitle: "Реальный размер", action: #selector(BrowserViewController.resetZoomCommand(_:)), keyEquivalent: "0")
     viewMenu.addItem(.separator())
     viewMenu.addItem(withTitle: "Предыдущая вкладка", action: #selector(BrowserViewController.previousTabCommand(_:)), keyEquivalent: "{")
     viewMenu.addItem(withTitle: "Следующая вкладка", action: #selector(BrowserViewController.nextTabCommand(_:)), keyEquivalent: "}")
