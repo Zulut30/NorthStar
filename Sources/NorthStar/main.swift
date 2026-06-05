@@ -105,6 +105,7 @@ private final class BrowserViewController: NSViewController {
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Reload")
     private let settingsButton = IconButton(symbolName: "gearshape", tooltip: "Settings")
     private let addressField = NSTextField()
+    private let searchEnginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let networkPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let progressIndicator = NSProgressIndicator()
 
@@ -225,6 +226,12 @@ private final class BrowserViewController: NSViewController {
         replace(tab: tab, with: NetworkProfile.allCases[index])
     }
 
+    @objc private func searchEngineSelectionChanged(_ sender: Any?) {
+        let index = searchEnginePopup.indexOfSelectedItem
+        guard SearchEngine.allCases.indices.contains(index) else { return }
+        preferences.searchEngine = SearchEngine.allCases[index]
+    }
+
     @objc private func preferencesChanged(_ notification: Notification) {
         applyPreferences(redrawHomeTabs: true)
     }
@@ -292,6 +299,15 @@ private final class BrowserViewController: NSViewController {
         addressField.target = self
         addressField.action = #selector(loadTypedAddress(_:))
 
+        searchEnginePopup.translatesAutoresizingMaskIntoConstraints = false
+        searchEnginePopup.controlSize = .regular
+        searchEnginePopup.font = .systemFont(ofSize: 13)
+        searchEnginePopup.target = self
+        searchEnginePopup.action = #selector(searchEngineSelectionChanged(_:))
+        searchEnginePopup.toolTip = "Search Engine"
+        searchEnginePopup.removeAllItems()
+        searchEnginePopup.addItems(withTitles: SearchEngine.allCases.map(\.title))
+
         networkPopup.translatesAutoresizingMaskIntoConstraints = false
         networkPopup.controlSize = .regular
         networkPopup.font = .systemFont(ofSize: 13)
@@ -324,7 +340,7 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [brandTitleField, backButton, forwardButton, homeButton, addressField, networkPopup, reloadButton, settingsButton, progressIndicator].forEach {
+        [brandTitleField, backButton, forwardButton, homeButton, addressField, searchEnginePopup, networkPopup, reloadButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -362,8 +378,12 @@ private final class BrowserViewController: NSViewController {
             networkPopup.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             networkPopup.widthAnchor.constraint(equalToConstant: 118),
 
+            searchEnginePopup.trailingAnchor.constraint(equalTo: networkPopup.leadingAnchor, constant: -10),
+            searchEnginePopup.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+            searchEnginePopup.widthAnchor.constraint(equalToConstant: 132),
+
             addressField.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 12),
-            addressField.trailingAnchor.constraint(equalTo: networkPopup.leadingAnchor, constant: -12),
+            addressField.trailingAnchor.constraint(equalTo: searchEnginePopup.leadingAnchor, constant: -12),
             addressField.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             addressField.heightAnchor.constraint(equalToConstant: 30),
 
@@ -695,9 +715,23 @@ private final class BrowserViewController: NSViewController {
     }
 
     private func handleInternalSearchURL(_ url: URL, in tab: BrowserTab) {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let query = components.queryItems?.first(where: { $0.name == "q" })?.value,
-              let targetURL = URLParser.url(from: query, searchEngine: preferences.searchEngine) else {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            showHome(in: tab)
+            return
+        }
+
+        let selectedEngine = components.queryItems?
+            .first(where: { $0.name == "engine" })?
+            .value
+            .flatMap(SearchEngine.init(identifier:))
+
+        if let selectedEngine, selectedEngine != preferences.searchEngine {
+            preferences.searchEngine = selectedEngine
+        }
+
+        guard let query = components.queryItems?.first(where: { $0.name == "q" })?.value,
+              !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let targetURL = URLParser.url(from: query, searchEngine: selectedEngine ?? preferences.searchEngine) else {
             showHome(in: tab)
             return
         }
@@ -732,6 +766,10 @@ private final class BrowserViewController: NSViewController {
 
         if let profileIndex = NetworkProfile.allCases.firstIndex(of: tab.profile) {
             networkPopup.selectItem(at: profileIndex)
+        }
+
+        if let searchIndex = SearchEngine.allCases.firstIndex(of: preferences.searchEngine) {
+            searchEnginePopup.selectItem(at: searchIndex)
         }
 
         view.window?.title = appName
@@ -1200,6 +1238,34 @@ private enum SearchEngine: Int, CaseIterable {
         }
     }
 
+    var identifier: String {
+        switch self {
+        case .duckDuckGo:
+            return "duckduckgo"
+        case .google:
+            return "google"
+        case .yandex:
+            return "yandex"
+        case .brave:
+            return "brave"
+        case .bing:
+            return "bing"
+        case .ecosia:
+            return "ecosia"
+        case .startpage:
+            return "startpage"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let engine = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = engine
+    }
+
     func searchURL(for query: String) -> URL? {
         let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
 
@@ -1503,6 +1569,10 @@ private enum HomePage {
     static func html(searchEngine: SearchEngine, theme: ThemeMode) -> String {
         let palette = HomePalette(theme: theme)
         let engine = searchEngine.title.htmlEscaped
+        let engineOptions = SearchEngine.allCases.map { option in
+            let selected = option == searchEngine ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
 
         return """
         <!doctype html>
@@ -1568,7 +1638,7 @@ private enum HomePage {
             }
             .search {
               display: grid;
-              grid-template-columns: 1fr auto;
+              grid-template-columns: minmax(180px, 1fr) 176px auto;
               gap: 10px;
               padding: 12px;
               background: var(--panel);
@@ -1588,6 +1658,18 @@ private enum HomePage {
               background: transparent;
             }
             input::placeholder { color: var(--muted); }
+            select {
+              width: 100%;
+              min-width: 0;
+              border: 1px solid var(--line);
+              outline: 0;
+              border-radius: 12px;
+              padding: 0 14px;
+              font-size: 15px;
+              font-weight: 650;
+              color: var(--text);
+              background: color-mix(in srgb, var(--panel) 72%, transparent);
+            }
             button {
               border: 0;
               border-radius: 12px;
@@ -1622,6 +1704,7 @@ private enum HomePage {
             }
             @media (max-width: 680px) {
               .search { grid-template-columns: 1fr; }
+              select { height: 46px; }
               button { height: 46px; }
               .quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             }
@@ -1636,9 +1719,12 @@ private enum HomePage {
             </section>
             <form class="search" id="searchForm">
               <input id="query" name="q" autofocus autocomplete="off" placeholder="Search or enter website">
+              <select id="engine" name="engine" aria-label="Search engine">
+                \(engineOptions)
+              </select>
               <button type="submit">Go</button>
             </form>
-            <div class="engine">Search engine: \(engine)</div>
+            <div class="engine">Current search engine: \(engine)</div>
             <nav class="quick" aria-label="Quick links">
               <a href="https://github.com">GitHub</a>
               <a href="https://news.ycombinator.com">Hacker News</a>
@@ -1649,11 +1735,15 @@ private enum HomePage {
           <script>
             const form = document.getElementById("searchForm");
             const query = document.getElementById("query");
+            const engine = document.getElementById("engine");
+            engine.addEventListener("change", () => {
+              window.location.href = "\(northStarSearchScheme)://engine?engine=" + encodeURIComponent(engine.value);
+            });
             form.addEventListener("submit", event => {
               event.preventDefault();
               const value = query.value.trim();
               if (!value) return;
-              window.location.href = "\(northStarSearchScheme)://search?q=" + encodeURIComponent(value);
+              window.location.href = "\(northStarSearchScheme)://search?q=" + encodeURIComponent(value) + "&engine=" + encodeURIComponent(engine.value);
             });
           </script>
         </body>

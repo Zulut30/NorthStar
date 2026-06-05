@@ -22,7 +22,8 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Beautiful tab cards with active-state accents and configurable placement: left, top, right, or bottom.
 - NorthStar home screen with integrated search and quick links.
 - Smart address bar that accepts URLs, localhost addresses, file URLs, or search text.
-- Search engine picker for DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
+- Search engine picker in the toolbar, on the home screen, and in Settings.
+- Built-in engines: DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
 - Theme picker for System, Light, and Dark.
 - Per-tab network modes: System, Private, Tor SOCKS, and Localhost.
 - New-window handling opens links into a new NorthStar tab instead of losing context.
@@ -39,6 +40,8 @@ Open settings with `Command-,` or the gear button in the toolbar.
 | Theme | System, Light, Dark |
 
 Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, and tab layout between launches.
+
+You can also switch the search engine directly from the toolbar or from the NorthStar home screen before running a search.
 
 ## Network Modes
 
