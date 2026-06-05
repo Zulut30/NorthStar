@@ -4912,19 +4912,24 @@ private final class AddressSuggestionViewController: NSViewController {
     var onSelect: ((AddressSuggestion) -> Void)?
 
     private let stackView = NSStackView()
+    private let horizontalInset: CGFloat = 8
+    private let rowHeight: CGFloat = 52
 
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.cornerRadius = 14
+        view.layer?.cornerRadius = 16
         view.layer?.masksToBounds = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96).cgColor
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.98).cgColor
+        view.layer?.borderWidth = 1
+        view.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.32).cgColor
 
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.orientation = .vertical
-        stackView.alignment = .width
-        stackView.spacing = 3
-        stackView.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        stackView.alignment = .leading
+        stackView.distribution = .fill
+        stackView.spacing = 4
+        stackView.edgeInsets = NSEdgeInsets(top: 8, left: horizontalInset, bottom: 8, right: horizontalInset)
         view.addSubview(stackView)
 
         NSLayoutConstraint.activate([
@@ -4936,6 +4941,9 @@ private final class AddressSuggestionViewController: NSViewController {
     }
 
     func update(suggestions: [AddressSuggestion], selectedIndex: Int?, width: CGFloat) {
+        let contentWidth = max(360, min(560, width))
+        let rowWidth = max(1, contentWidth - horizontalInset * 2)
+
         stackView.arrangedSubviews.forEach {
             stackView.removeArrangedSubview($0)
             $0.removeFromSuperview()
@@ -4948,12 +4956,15 @@ private final class AddressSuggestionViewController: NSViewController {
                 self?.onSelect?(suggestion)
             }
             stackView.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalToConstant: rowWidth).isActive = true
+            row.heightAnchor.constraint(equalToConstant: rowHeight).isActive = true
         }
 
         preferredContentSize = NSSize(
-            width: max(440, min(680, max(width, 520))),
-            height: CGFloat(suggestions.count) * 56 + 16
+            width: contentWidth,
+            height: CGFloat(suggestions.count) * (rowHeight + stackView.spacing) - stackView.spacing + 16
         )
+        view.setFrameSize(preferredContentSize)
     }
 }
 
@@ -4973,6 +4984,7 @@ private final class AddressSuggestionRowView: NSControl {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = 11
+        layer?.masksToBounds = true
 
         iconContainer.translatesAutoresizingMaskIntoConstraints = false
         iconContainer.wantsLayer = true
@@ -4987,11 +4999,15 @@ private final class AddressSuggestionRowView: NSControl {
         titleField.translatesAutoresizingMaskIntoConstraints = false
         titleField.font = .systemFont(ofSize: 13.5, weight: .bold)
         titleField.lineBreakMode = .byTruncatingTail
+        titleField.maximumNumberOfLines = 1
+        titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         detailField.translatesAutoresizingMaskIntoConstraints = false
         detailField.font = .systemFont(ofSize: 12)
         detailField.textColor = .secondaryLabelColor
         detailField.lineBreakMode = .byTruncatingMiddle
+        detailField.maximumNumberOfLines = 1
+        detailField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         addSubview(iconContainer)
         iconContainer.addSubview(iconView)
@@ -4999,8 +5015,6 @@ private final class AddressSuggestionRowView: NSControl {
         addSubview(detailField)
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 52),
-
             iconContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconContainer.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconContainer.widthAnchor.constraint(equalToConstant: 34),
