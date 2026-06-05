@@ -153,11 +153,7 @@ private final class BrowserViewController: NSViewController {
     private let bookmarkButton = IconButton(symbolName: "star", tooltip: "Добавить в закладки")
     private let readerButton = IconButton(symbolName: "text.rectangle.page", tooltip: "Режим чтения")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
-    private let hardReloadButton = ToolbarActionButton(symbolName: "arrow.clockwise.circle", title: "Без кэша", tooltip: "Жёсткое обновление без кэша", width: 94)
-    private let privateButton = ToolbarActionButton(symbolName: "eye.slash", title: "Приватно", tooltip: "Новая приватная вкладка", width: 92)
-    private let screenshotButton = ToolbarActionButton(symbolName: "camera.viewfinder", title: "Снимок", tooltip: "Скопировать скриншот вкладки", width: 84)
-    private let currencyButton = ToolbarActionButton(symbolName: "dollarsign.circle", title: "Валюта", tooltip: "Конвертер валют", width: 82)
-    private let parserButton = ToolbarActionButton(symbolName: "doc.text.magnifyingglass", title: "Парсер", tooltip: "Разобрать текущую страницу", width: 80)
+    private let toolsButton = ToolbarActionButton(symbolName: "wrench.and.screwdriver", title: "Инструменты", tooltip: "Инструменты браузера", width: 126)
     private let settingsButton = ToolbarActionButton(symbolName: "gearshape", title: "Настройки", tooltip: settingsTitle, width: 104)
     private let addressField = NSTextField()
     private let addressSuggestionPopover = NSPopover()
@@ -260,12 +256,10 @@ private final class BrowserViewController: NSViewController {
         let configuration = WKSnapshotConfiguration()
         configuration.rect = tab.webView.bounds
 
-        screenshotButton.isEnabled = false
         playScreenshotCaptureEffect()
         tab.webView.takeSnapshot(with: configuration) { [weak self] image, error in
             Task { @MainActor in
                 guard let self else { return }
-                self.screenshotButton.isEnabled = true
 
                 guard let image else {
                     self.showScreenshotError(error)
@@ -384,6 +378,31 @@ private final class BrowserViewController: NSViewController {
     @objc func focusLocation(_ sender: Any?) {
         view.window?.makeFirstResponder(addressField)
         addressField.currentEditor()?.selectAll(nil)
+    }
+
+    @objc private func showToolsMenu(_ sender: NSButton) {
+        let menu = NSMenu()
+        menu.autoenablesItems = false
+        let tab = activeTab
+
+        func addItem(_ title: String, symbol: String, action: Selector, enabled: Bool = true) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = enabled
+            item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+            menu.addItem(item)
+        }
+
+        addItem("Парсер страницы", symbol: "doc.text.magnifyingglass", action: #selector(openParserCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
+        addItem("Конвертер валют", symbol: "dollarsign.circle", action: #selector(showCurrencyConverterCommand(_:)))
+        addItem("Режим чтения", symbol: "text.rectangle.page", action: #selector(openReaderCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
+        menu.addItem(.separator())
+        addItem("Новая приватная вкладка", symbol: "eye.slash", action: #selector(newPrivateTabCommand(_:)))
+        menu.addItem(.separator())
+        addItem("Скриншот вкладки", symbol: "camera.viewfinder", action: #selector(screenshotTabCommand(_:)), enabled: !(tab?.webView.bounds.isEmpty ?? true))
+        addItem("Обновить без кэша", symbol: "arrow.clockwise.circle", action: #selector(hardReloadCommand(_:)), enabled: tab != nil)
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 6), in: sender)
     }
 
     @objc func findOnPageCommand(_ sender: Any?) {
@@ -726,7 +745,31 @@ private final class BrowserViewController: NSViewController {
         }
 
         guard query.count >= 2 else {
-            return Array(suggestions.prefix(5))
+            return Array(suggestions.prefix(7))
+        }
+
+        for entry in BookmarkStore.shared.entries {
+            let title = entry.title.lowercased()
+            let url = entry.url.lowercased()
+            guard title.contains(normalizedQuery) || url.contains(normalizedQuery),
+                  let entryURL = URL(string: entry.url) else {
+                continue
+            }
+
+            append(
+                AddressSuggestion(
+                    title: entry.title.truncatedForSuggestion(maxLength: 76),
+                    detail: AddressSuggestion.displayText(for: entryURL).truncatedForSuggestion(maxLength: 96),
+                    input: entry.url,
+                    url: entryURL,
+                    symbolName: "star.fill",
+                    favicon: FaviconStore.shared.cachedImage(for: entryURL, profile: .system)
+                )
+            )
+
+            if suggestions.count >= 4 {
+                break
+            }
         }
 
         for entry in BrowserHistoryStore.shared.entries {
@@ -740,19 +783,20 @@ private final class BrowserViewController: NSViewController {
             append(
                 AddressSuggestion(
                     title: entry.title.truncatedForSuggestion(maxLength: 76),
-                    detail: entry.url.truncatedForSuggestion(maxLength: 110),
+                    detail: AddressSuggestion.displayText(for: entryURL).truncatedForSuggestion(maxLength: 96),
                     input: entry.url,
                     url: entryURL,
-                    symbolName: "clock"
+                    symbolName: "clock",
+                    favicon: FaviconStore.shared.cachedImage(for: entryURL, profile: .system)
                 )
             )
 
-            if suggestions.count >= 5 {
+            if suggestions.count >= 7 {
                 break
             }
         }
 
-        return Array(suggestions.prefix(5))
+        return Array(suggestions.prefix(7))
     }
 
     private func renderAddressSuggestions() {
@@ -840,7 +884,7 @@ private final class BrowserViewController: NSViewController {
         )
 
         if !currencyPopover.isShown {
-            currencyPopover.show(relativeTo: currencyButton.bounds, of: currencyButton, preferredEdge: .minY)
+            currencyPopover.show(relativeTo: toolsButton.bounds, of: toolsButton, preferredEdge: .minY)
         }
 
         if scanPageOnOpen, amount == nil, canScanPage, let webView = activeTab?.webView {
@@ -1096,16 +1140,8 @@ private final class BrowserViewController: NSViewController {
         readerButton.action = #selector(openReaderCommand(_:))
         reloadButton.target = self
         reloadButton.action = #selector(reloadCommand(_:))
-        hardReloadButton.target = self
-        hardReloadButton.action = #selector(hardReloadCommand(_:))
-        privateButton.target = self
-        privateButton.action = #selector(newPrivateTabCommand(_:))
-        screenshotButton.target = self
-        screenshotButton.action = #selector(screenshotTabCommand(_:))
-        currencyButton.target = self
-        currencyButton.action = #selector(showCurrencyConverterCommand(_:))
-        parserButton.target = self
-        parserButton.action = #selector(openParserCommand(_:))
+        toolsButton.target = self
+        toolsButton.action = #selector(showToolsMenu(_:))
         settingsButton.target = self
         settingsButton.action = #selector(showSettingsCommand(_:))
 
@@ -1113,7 +1149,7 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(webContainerView)
 
         toolbarView.addSubview(toolbarTintView)
-        [toolbarSeparatorView, brandLogoView, brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
+        [toolbarSeparatorView, brandLogoView, brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, reloadButton, toolsButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -1167,26 +1203,14 @@ private final class BrowserViewController: NSViewController {
             settingsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
             settingsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            currencyButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
-            currencyButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+            toolsButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
+            toolsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            screenshotButton.trailingAnchor.constraint(equalTo: currencyButton.leadingAnchor, constant: -8),
-            screenshotButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-
-            privateButton.trailingAnchor.constraint(equalTo: screenshotButton.leadingAnchor, constant: -8),
-            privateButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-
-            hardReloadButton.trailingAnchor.constraint(equalTo: privateButton.leadingAnchor, constant: -8),
-            hardReloadButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-
-            reloadButton.trailingAnchor.constraint(equalTo: hardReloadButton.leadingAnchor, constant: -8),
+            reloadButton.trailingAnchor.constraint(equalTo: toolsButton.leadingAnchor, constant: -8),
             reloadButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            parserButton.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -8),
-            parserButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-
             addressField.leadingAnchor.constraint(equalTo: readerButton.trailingAnchor, constant: 12),
-            addressField.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -12),
+            addressField.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -12),
             addressField.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             addressField.heightAnchor.constraint(equalToConstant: 32),
 
@@ -1916,9 +1940,6 @@ private final class BrowserViewController: NSViewController {
             backButton.isEnabled = false
             forwardButton.isEnabled = false
             reloadButton.isEnabled = false
-            hardReloadButton.isEnabled = false
-            screenshotButton.isEnabled = false
-            parserButton.isEnabled = false
             readerButton.isEnabled = false
             bookmarkButton.isEnabled = false
             addressField.stringValue = ""
@@ -1929,9 +1950,6 @@ private final class BrowserViewController: NSViewController {
         backButton.isEnabled = tab.webView.canGoBack
         forwardButton.isEnabled = tab.webView.canGoForward
         reloadButton.isEnabled = true
-        hardReloadButton.isEnabled = true
-        screenshotButton.isEnabled = !tab.webView.bounds.isEmpty
-        parserButton.isEnabled = tab.isBrowsablePage
         readerButton.isEnabled = tab.isBrowsablePage
         syncBookmarkButton(for: tab)
 
@@ -5659,14 +5677,16 @@ private struct AddressSuggestion {
     let input: String
     let url: URL?
     let symbolName: String
+    let favicon: NSImage?
     let identity: String
 
-    init(title: String, detail: String, input: String, url: URL?, symbolName: String, identity: String? = nil) {
+    init(title: String, detail: String, input: String, url: URL?, symbolName: String, favicon: NSImage? = nil, identity: String? = nil) {
         self.title = title
         self.detail = detail
         self.input = input
         self.url = url
         self.symbolName = symbolName
+        self.favicon = favicon
         self.identity = identity ?? url?.absoluteString ?? input.lowercased()
     }
 
@@ -5686,7 +5706,7 @@ private final class AddressSuggestionViewController: NSViewController {
 
     private let stackView = NSStackView()
     private let horizontalInset: CGFloat = 8
-    private let rowHeight: CGFloat = 52
+    private let rowHeight: CGFloat = 54
 
     override func loadView() {
         view = NSView()
@@ -5714,7 +5734,7 @@ private final class AddressSuggestionViewController: NSViewController {
     }
 
     func update(suggestions: [AddressSuggestion], selectedIndex: Int?, width: CGFloat) {
-        let contentWidth = max(360, min(560, width))
+        let contentWidth = max(420, min(720, width))
         let rowWidth = max(1, contentWidth - horizontalInset * 2)
 
         stackView.arrangedSubviews.forEach {
@@ -5749,7 +5769,10 @@ private final class AddressSuggestionRowView: NSControl {
     private let iconView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let detailField = NSTextField(labelWithString: "")
+    private let returnHint = NSTextField(labelWithString: "⏎")
     private var isSelected = false
+    private var isHovered = false
+    private var trackingAreaReference: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -5770,7 +5793,7 @@ private final class AddressSuggestionRowView: NSControl {
         iconView.contentTintColor = .controlAccentColor
 
         titleField.translatesAutoresizingMaskIntoConstraints = false
-        titleField.font = .systemFont(ofSize: 13.5, weight: .bold)
+        titleField.font = .systemFont(ofSize: 13.5, weight: .semibold)
         titleField.lineBreakMode = .byTruncatingTail
         titleField.maximumNumberOfLines = 1
         titleField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -5782,10 +5805,21 @@ private final class AddressSuggestionRowView: NSControl {
         detailField.maximumNumberOfLines = 1
         detailField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        returnHint.translatesAutoresizingMaskIntoConstraints = false
+        returnHint.font = .systemFont(ofSize: 12, weight: .bold)
+        returnHint.textColor = .secondaryLabelColor
+        returnHint.alignment = .center
+        returnHint.wantsLayer = true
+        returnHint.layer?.cornerRadius = 6
+        returnHint.layer?.borderWidth = 1
+        returnHint.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
+        returnHint.isHidden = true
+
         addSubview(iconContainer)
         iconContainer.addSubview(iconView)
         addSubview(titleField)
         addSubview(detailField)
+        addSubview(returnHint)
 
         NSLayoutConstraint.activate([
             iconContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
@@ -5795,12 +5829,17 @@ private final class AddressSuggestionRowView: NSControl {
 
             iconView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
             iconView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 17),
-            iconView.heightAnchor.constraint(equalToConstant: 17),
+            iconView.widthAnchor.constraint(equalToConstant: 18),
+            iconView.heightAnchor.constraint(equalToConstant: 18),
+
+            returnHint.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            returnHint.centerYAnchor.constraint(equalTo: centerYAnchor),
+            returnHint.widthAnchor.constraint(equalToConstant: 26),
+            returnHint.heightAnchor.constraint(equalToConstant: 22),
 
             titleField.topAnchor.constraint(equalTo: topAnchor, constant: 9),
             titleField.leadingAnchor.constraint(equalTo: iconContainer.trailingAnchor, constant: 11),
-            titleField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+            titleField.trailingAnchor.constraint(equalTo: returnHint.leadingAnchor, constant: -10),
 
             detailField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 2),
             detailField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
@@ -5814,9 +5853,49 @@ private final class AddressSuggestionRowView: NSControl {
 
     func configure(suggestion: AddressSuggestion, isSelected: Bool) {
         self.isSelected = isSelected
-        iconView.image = NSImage(systemSymbolName: suggestion.symbolName, accessibilityDescription: suggestion.title)
+
+        if let favicon = suggestion.favicon {
+            iconView.image = favicon
+            iconView.contentTintColor = nil
+            iconContainer.layer?.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.9).cgColor
+            iconContainer.layer?.borderWidth = 1
+            iconContainer.layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.3).cgColor
+        } else {
+            iconView.image = NSImage(systemSymbolName: suggestion.symbolName, accessibilityDescription: suggestion.title)
+            iconView.contentTintColor = .controlAccentColor
+            iconContainer.layer?.borderWidth = 0
+        }
+
         titleField.stringValue = suggestion.title
         detailField.stringValue = suggestion.detail
+        returnHint.isHidden = !isSelected
+        applyState()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let trackingAreaReference {
+            removeTrackingArea(trackingAreaReference)
+        }
+
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.activeAlways, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        trackingAreaReference = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        applyState()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
         applyState()
     }
 
@@ -5825,12 +5904,19 @@ private final class AddressSuggestionRowView: NSControl {
     }
 
     private func applyState() {
-        layer?.backgroundColor = isSelected
-            ? NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
-            : NSColor.clear.cgColor
-        iconContainer.layer?.backgroundColor = isSelected
-            ? NSColor.controlAccentColor.withAlphaComponent(0.24).cgColor
-            : NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+        if isSelected {
+            layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+        } else if isHovered {
+            layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
+        } else {
+            layer?.backgroundColor = NSColor.clear.cgColor
+        }
+
+        if iconView.contentTintColor != nil {
+            iconContainer.layer?.backgroundColor = isSelected
+                ? NSColor.controlAccentColor.withAlphaComponent(0.24).cgColor
+                : NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
+        }
     }
 }
 
