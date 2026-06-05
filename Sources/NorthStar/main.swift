@@ -1,6 +1,8 @@
 import AppKit
+import CoreServices
 import Darwin
 import Network
+import UniformTypeIdentifiers
 import WebKit
 
 private let appName = "NorthStar"
@@ -48,6 +50,20 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        openExternalURLs(urls)
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        openExternalURLs([URL(fileURLWithPath: filename)])
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        openExternalURLs(filenames.map { URL(fileURLWithPath: $0) })
+        sender.reply(toOpenOrPrint: .success)
+    }
+
     @objc func newWindow(_ sender: Any?) {
         let controller = BrowserWindowController()
         controller.onClose = { [weak self, weak controller] in
@@ -59,15 +75,35 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
     }
+
+    private func openExternalURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+
+        let controller = windows.first { $0.window?.isVisible == true } ?? {
+            let controller = BrowserWindowController()
+            controller.onClose = { [weak self, weak controller] in
+                guard let self, let controller else { return }
+                self.windows.removeAll { $0 === controller }
+            }
+            windows.append(controller)
+            controller.showWindow(nil)
+            return controller
+        }()
+
+        controller.window?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        urls.forEach { controller.openExternalURL($0) }
+    }
 }
 
 @MainActor
 private final class BrowserWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
+    private let browserViewController: BrowserViewController
 
     init() {
-        let viewController = BrowserViewController()
-        let window = NSWindow(contentViewController: viewController)
+        browserViewController = BrowserViewController()
+        let window = NSWindow(contentViewController: browserViewController)
         window.title = appName
         window.setContentSize(NSSize(width: 1360, height: 840))
         window.minSize = NSSize(width: 920, height: 560)
@@ -84,6 +120,10 @@ private final class BrowserWindowController: NSWindowController, NSWindowDelegat
 
     func windowWillClose(_ notification: Notification) {
         onClose?()
+    }
+
+    func openExternalURL(_ url: URL) {
+        browserViewController.openExternalURL(url)
     }
 }
 
@@ -130,6 +170,7 @@ private final class BrowserViewController: NSViewController {
     private var privateDownloads: Set<ObjectIdentifier> = []
     private var activeAddressSuggestions: [AddressSuggestion] = []
     private var selectedAddressSuggestionIndex: Int?
+    private var defaultAppStatusMessage: String?
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
 
@@ -328,6 +369,20 @@ private final class BrowserViewController: NSViewController {
         Task { @MainActor in
             await openParserTab(from: tab)
         }
+    }
+
+    func openExternalURL(_ url: URL) {
+        let targetURL = url.isFileURL ? url : url.standardized
+
+        if let tab = activeTab,
+           tab.isShowingHome,
+           NetworkPolicy.allows(targetURL, profile: tab.profile) {
+            load(targetURL, in: tab)
+            return
+        }
+
+        let profile = activeTab?.profile ?? .system
+        addTab(profile: profile, url: targetURL, activate: true)
     }
 
     @objc private func goHome(_ sender: Any?) {
@@ -1222,7 +1277,8 @@ private final class BrowserViewController: NSViewController {
                 loadingTabs: tabs.filter { $0.webView.isLoading }.count
             ),
             theme: preferences.theme,
-            activeSection: activeSection
+            activeSection: activeSection,
+            defaultAppStatus: defaultAppStatusMessage
         )
     }
 
@@ -1389,6 +1445,26 @@ private final class BrowserViewController: NSViewController {
         case "clear-downloads":
             DownloadHistoryStore.shared.clear()
             showSettings(in: tab, activeSection: .downloads)
+        case "default-browser":
+            defaultAppStatusMessage = "Назначаю NorthStar браузером по умолчанию..."
+            showSettings(in: tab, activeSection: .browser)
+            DefaultAppManager.setAsDefaultBrowser { [weak self, weak tab] message in
+                Task { @MainActor in
+                    guard let self, let tab else { return }
+                    self.defaultAppStatusMessage = message
+                    self.showSettings(in: tab, activeSection: .browser)
+                }
+            }
+        case "default-pdf":
+            defaultAppStatusMessage = "Назначаю NorthStar приложением по умолчанию для PDF..."
+            showSettings(in: tab, activeSection: .browser)
+            DefaultAppManager.setAsDefaultPDFViewer { [weak self, weak tab] message in
+                Task { @MainActor in
+                    guard let self, let tab else { return }
+                    self.defaultAppStatusMessage = message
+                    self.showSettings(in: tab, activeSection: .browser)
+                }
+            }
         default:
             showSettings(in: tab)
         }
@@ -1842,7 +1918,7 @@ private final class BrowserTab {
         )
     }
 
-    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection) {
+    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) {
         isShowingHome = false
         isShowingSettings = true
         isShowingParser = false
@@ -1855,7 +1931,7 @@ private final class BrowserTab {
         faviconImage = NSImage(systemSymbolName: "gearshape", accessibilityDescription: settingsTitle)
         notifyChanged()
         webView.loadHTMLString(
-            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, performance: performance, theme: theme, activeSection: activeSection),
+            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, performance: performance, theme: theme, activeSection: activeSection, defaultAppStatus: defaultAppStatus),
             baseURL: nil
         )
     }
@@ -3896,6 +3972,57 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
 private enum BrowserUserAgent {
     static let applicationName = "Version/18.5 Safari/605.1.15"
     static let safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) \(applicationName)"
+}
+
+private enum DefaultAppManager {
+    static func setAsDefaultBrowser(completion: @escaping (String) -> Void) {
+        let appURL = Bundle.main.bundleURL
+        registerApplication(at: appURL)
+
+        let schemes = ["http", "https"]
+        let group = DispatchGroup()
+        let lock = NSLock()
+        var errors: [String] = []
+
+        for scheme in schemes {
+            group.enter()
+            NSWorkspace.shared.setDefaultApplication(at: appURL, toOpenURLsWithScheme: scheme) { error in
+                if let error {
+                    lock.lock()
+                    errors.append("\(scheme): \(error.localizedDescription)")
+                    lock.unlock()
+                }
+                group.leave()
+            }
+        }
+
+        group.notify(queue: .main) {
+            if errors.isEmpty {
+                completion("NorthStar назначен браузером по умолчанию для http и https.")
+            } else {
+                completion("Не удалось назначить браузер по умолчанию: \(errors.joined(separator: "; "))")
+            }
+        }
+    }
+
+    static func setAsDefaultPDFViewer(completion: @escaping (String) -> Void) {
+        let appURL = Bundle.main.bundleURL
+        registerApplication(at: appURL)
+
+        NSWorkspace.shared.setDefaultApplication(at: appURL, toOpen: .pdf) { error in
+            DispatchQueue.main.async {
+                if let error {
+                    completion("Не удалось назначить NorthStar для PDF: \(error.localizedDescription)")
+                } else {
+                    completion("NorthStar назначен приложением по умолчанию для PDF.")
+                }
+            }
+        }
+    }
+
+    private static func registerApplication(at appURL: URL) {
+        _ = LSRegisterURL(appURL as CFURL, true)
+    }
 }
 
 private enum AdBlocker {
@@ -6002,9 +6129,14 @@ private enum SettingsSection: String, CaseIterable {
 }
 
 private enum SettingsPage {
-    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection) -> String {
+    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) -> String {
         let palette = HomePalette(theme: theme, colorScheme: preferences.colorScheme, design: preferences.design)
         let activeSectionID = activeSection.identifier.htmlEscaped
+        let defaultAppStatusMarkup = defaultAppStatus.map { message in
+            """
+            <div class="notice">\(message.htmlEscaped)</div>
+            """
+        } ?? ""
         let navMarkup = SettingsSection.allCases.map { section in
             let active = section == activeSection ? " active" : ""
             return """
@@ -6350,6 +6482,15 @@ private enum SettingsPage {
               font-size: 13px;
               font-weight: 700;
             }
+            .notice {
+              border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
+              border-radius: var(--radius);
+              background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+              color: var(--text);
+              padding: 13px 15px;
+              font-size: 13px;
+              font-weight: 700;
+            }
             .status {
               border-radius: 999px;
               padding: 5px 10px;
@@ -6505,9 +6646,10 @@ private enum SettingsPage {
                 <div class="panel-head">
                   <div>
                     <h1>Браузер</h1>
-                    <p class="muted">Расположение вкладок и режим блокировки рекламы.</p>
+                    <p class="muted">Расположение вкладок, блокировка рекламы и системные назначения по умолчанию.</p>
                   </div>
                 </div>
+                \(defaultAppStatusMarkup)
                 <div class="control-grid">
                   <div class="setting-card">
                     <label>
@@ -6520,6 +6662,16 @@ private enum SettingsPage {
                       <span>Блокировка рекламы</span>
                       <select id="adblock" data-setting>\(adBlockOptions)</select>
                     </label>
+                  </div>
+                  <div class="setting-card">
+                    <h3>Браузер по умолчанию</h3>
+                    <p class="muted">Назначает NorthStar для ссылок http и https.</p>
+                    <a class="button" href="\(northStarSettingsScheme)://default-browser">Сделать по умолчанию</a>
+                  </div>
+                  <div class="setting-card">
+                    <h3>PDF по умолчанию</h3>
+                    <p class="muted">Открывает PDF-файлы в NorthStar через WebKit.</p>
+                    <a class="button" href="\(northStarSettingsScheme)://default-pdf">Открывать PDF в NorthStar</a>
                   </div>
                 </div>
               </section>

@@ -29,6 +29,7 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Built-in engines: DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
 - Settings open as a first-class internal tab with a browser-style sidebar.
 - Browsing history and download history are available from the Settings tab.
+- Settings include default-app actions for making NorthStar the default `http`/`https` browser and PDF viewer.
 - Private tabs are available from the toolbar or `Shift-Command-N` and avoid local history, download history, persistent cookies, and local performance URL samples.
 - Current-tab screenshots can be copied directly to the macOS clipboard from the toolbar.
 - Built-in currency converter using ExchangeRate-API, with toolbar access, visible-page price scanning, and right-click actions for selected prices.
@@ -58,12 +59,13 @@ Open settings with `Command-,`, the gear button in the toolbar, or `northstar://
 | Home screen | Soft Gradient, Solid, Fine Grid, Glow, Glass |
 | Ad blocking | Compatible, Strict |
 | Currency conversion | Default source currency, default target currency |
+| Default apps | Set NorthStar as the default web browser or PDF viewer |
 
 Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, search region, search language, theme, color scheme, design density, home-screen background, ad blocking mode, default currency conversion choices, and tab layout between launches.
 
 You can also switch the search engine, search region, and search language from the NorthStar home screen before running a search.
 
-The Settings tab uses a sidebar with separate sections for search, appearance, browser behavior, currencies, performance, browsing history, and downloads. History and downloads have their own views with clear actions.
+The Settings tab uses a sidebar with separate sections for search, appearance, browser behavior, currencies, performance, browsing history, and downloads. History and downloads have their own views with clear actions. The Browser section also has one-click default-app actions for `http`/`https` links and PDF files.
 
 The currency converter uses ExchangeRate-API's pair conversion endpoint. Use the toolbar converter for manual amounts, scan the visible page for a price, or select a price on a page, right-click, and choose `Конвертировать выделенную цену`; NorthStar will parse the amount and use your default target currency. The API key is stored locally outside the visible Settings UI.
 

@@ -18,6 +18,33 @@
     <string>NorthStar</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>Web URLs</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>http</string>
+                <string>https</string>
+            </array>
+        </dict>
+    </array>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>PDF Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>com.adobe.pdf</string>
+            </array>
+        </dict>
+    </array>
     <key>CFBundleShortVersionString</key>
     <string>0.1.0</string>
     <key>CFBundleVersion</key>
