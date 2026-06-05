@@ -8,7 +8,6 @@ import WebKit
 private let appName = "NorthStar"
 private let settingsTitle = "Настройки"
 private let parserTitle = "Парсер"
-private let readerTitle = "Чтение"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
@@ -147,8 +146,6 @@ private final class BrowserViewController: NSViewController {
     private let backButton = IconButton(symbolName: "chevron.left", tooltip: "Назад")
     private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Вперёд")
     private let homeButton = IconButton(symbolName: "house", tooltip: "Домой")
-    private let bookmarkButton = IconButton(symbolName: "star", tooltip: "Добавить в закладки")
-    private let readerButton = IconButton(symbolName: "text.rectangle.page", tooltip: "Режим чтения")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
     private let hardReloadButton = ToolbarActionButton(symbolName: "arrow.clockwise.circle", title: "Без кэша", tooltip: "Жёсткое обновление без кэша", width: 94)
     private let privateButton = ToolbarActionButton(symbolName: "eye.slash", title: "Приватно", tooltip: "Новая приватная вкладка", width: 92)
@@ -828,10 +825,6 @@ private final class BrowserViewController: NSViewController {
         forwardButton.action = #selector(goForwardCommand(_:))
         homeButton.target = self
         homeButton.action = #selector(goHome(_:))
-        bookmarkButton.target = self
-        bookmarkButton.action = #selector(toggleBookmarkCommand(_:))
-        readerButton.target = self
-        readerButton.action = #selector(openReaderCommand(_:))
         reloadButton.target = self
         reloadButton.action = #selector(reloadCommand(_:))
         hardReloadButton.target = self
@@ -850,7 +843,7 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
+        [brandTitleField, backButton, forwardButton, homeButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -881,12 +874,6 @@ private final class BrowserViewController: NSViewController {
             homeButton.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 8),
             homeButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            bookmarkButton.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 8),
-            bookmarkButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-
-            readerButton.leadingAnchor.constraint(equalTo: bookmarkButton.trailingAnchor, constant: 8),
-            readerButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-
             settingsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
             settingsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
@@ -908,7 +895,7 @@ private final class BrowserViewController: NSViewController {
             parserButton.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -8),
             parserButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            addressField.leadingAnchor.constraint(equalTo: readerButton.trailingAnchor, constant: 12),
+            addressField.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 12),
             addressField.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -12),
             addressField.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             addressField.heightAnchor.constraint(equalToConstant: 30),
