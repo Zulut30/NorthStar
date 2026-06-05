@@ -10,6 +10,7 @@ private let settingsTitle = "Настройки"
 private let parserTitle = "Парсер"
 private let readerTitle = "Чтение"
 private let cssScraperTitle = "CSS Scrapper"
+private let frozenTitle = "Заморожено"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
@@ -363,6 +364,10 @@ private final class BrowserViewController: NSViewController {
             tab.loadParserPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if tab.isShowingReader, let snapshot = tab.readerSnapshot {
             tab.loadReaderPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if tab.isShowingCssScraper, let snapshot = tab.cssScrapeSnapshot {
+            tab.loadCssScraperPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if tab.isShowingFrozenPage, let snapshot = tab.frozenSnapshot {
+            tab.loadFrozenPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else {
             tab.webView.reload()
         }
@@ -379,6 +384,10 @@ private final class BrowserViewController: NSViewController {
             tab.loadParserPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if tab.isShowingReader, let snapshot = tab.readerSnapshot {
             tab.loadReaderPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if tab.isShowingCssScraper, let snapshot = tab.cssScrapeSnapshot {
+            tab.loadCssScraperPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if tab.isShowingFrozenPage, let snapshot = tab.frozenSnapshot {
+            tab.loadFrozenPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else {
             tab.webView.stopLoading()
             tab.webView.reloadFromOrigin()
@@ -403,10 +412,15 @@ private final class BrowserViewController: NSViewController {
             menu.addItem(item)
         }
 
+        addItem("История", symbol: "clock.arrow.circlepath", action: #selector(showHistoryCommand(_:)))
+        addItem("Загрузки", symbol: "arrow.down.circle", action: #selector(showDownloadsCommand(_:)))
+        addItem("Настройки", symbol: "gearshape", action: #selector(showSettingsCommand(_:)))
+        menu.addItem(.separator())
         addItem("Парсер страницы", symbol: "doc.text.magnifyingglass", action: #selector(openParserCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
         addItem("CSS Scrapper", symbol: "eyedropper.halffull", action: #selector(openCssScraperCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
-        addItem("Конвертер валют", symbol: "dollarsign.circle", action: #selector(showCurrencyConverterCommand(_:)))
         addItem("Режим чтения", symbol: "text.rectangle.page", action: #selector(openReaderCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
+        addItem("Заморозить страницу", symbol: "snowflake", action: #selector(freezePageCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
+        addItem("Конвертер валют", symbol: "dollarsign.circle", action: #selector(showCurrencyConverterCommand(_:)))
         let aiTitle = preferences.aiFilterEnabled ? "ИИ-фильтр: выключить" : "ИИ-фильтр: включить"
         addItem(aiTitle, symbol: "sparkles.rectangle.stack", action: #selector(toggleAIFilterCommand(_:)))
         menu.addItem(.separator())
@@ -600,6 +614,14 @@ private final class BrowserViewController: NSViewController {
         openSettingsTab()
     }
 
+    @objc func showHistoryCommand(_ sender: Any?) {
+        openSettingsTab(activeSection: .history)
+    }
+
+    @objc func showDownloadsCommand(_ sender: Any?) {
+        openSettingsTab(activeSection: .downloads)
+    }
+
     @objc func openParserCommand(_ sender: Any?) {
         guard let tab = activeTab else { return }
         Task { @MainActor in
@@ -621,6 +643,13 @@ private final class BrowserViewController: NSViewController {
         }
     }
 
+    @objc func freezePageCommand(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+        Task { @MainActor in
+            await freezePage(in: tab)
+        }
+    }
+
     @objc func toggleBookmarkCommand(_ sender: Any?) {
         guard let tab = activeTab, let pageURL = currentPageURL(for: tab) else {
             NSSound.beep()
@@ -634,20 +663,7 @@ private final class BrowserViewController: NSViewController {
     }
 
     @objc func showBookmarksCommand(_ sender: Any?) {
-        if let existingTab = tabs.first(where: \.isShowingSettings) {
-            activeTabID = existingTab.id
-            showActiveTab()
-            showSettings(in: existingTab, activeSection: .bookmarks)
-            renderTabs()
-            syncToolbar()
-            return
-        }
-
-        openSettingsTab()
-        if let tab = tabs.first(where: \.isShowingSettings) {
-            showSettings(in: tab, activeSection: .bookmarks)
-            syncToolbar()
-        }
+        openSettingsTab(activeSection: .bookmarks)
     }
 
     private func currentPageURL(for tab: BrowserTab) -> URL? {
@@ -727,7 +743,7 @@ private final class BrowserViewController: NSViewController {
         }
 
         activeAddressSuggestions = addressSuggestions(for: trimmed)
-        selectedAddressSuggestionIndex = activeAddressSuggestions.isEmpty ? nil : 0
+        selectedAddressSuggestionIndex = nil
 
         guard !activeAddressSuggestions.isEmpty else {
             hideAddressSuggestions()
@@ -769,7 +785,7 @@ private final class BrowserViewController: NSViewController {
             if let previousSelection, self.activeAddressSuggestions.indices.contains(previousSelection) {
                 self.selectedAddressSuggestionIndex = previousSelection
             } else {
-                self.selectedAddressSuggestionIndex = self.activeAddressSuggestions.isEmpty ? nil : 0
+                self.selectedAddressSuggestionIndex = nil
             }
             self.renderAddressSuggestions()
             self.showAddressSuggestions()
@@ -2010,6 +2026,8 @@ private final class BrowserViewController: NSViewController {
         let readerSnapshot = oldTab.readerSnapshot
         let wasShowingCssScraper = oldTab.isShowingCssScraper
         let cssScrapeSnapshot = oldTab.cssScrapeSnapshot
+        let wasShowingFrozenPage = oldTab.isShowingFrozenPage
+        let frozenSnapshot = oldTab.frozenSnapshot
         let targetURL = oldTab.isInternalPage ? nil : oldTab.url ?? oldTab.webView.url
         let newTab = makeTab(profile: profile)
 
@@ -2033,6 +2051,8 @@ private final class BrowserViewController: NSViewController {
             newTab.loadReaderPage(snapshot: readerSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if wasShowingCssScraper, let cssScrapeSnapshot {
             newTab.loadCssScraperPage(snapshot: cssScrapeSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if wasShowingFrozenPage, let frozenSnapshot {
+            newTab.loadFrozenPage(snapshot: frozenSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if let targetURL, NetworkPolicy.allows(targetURL, profile: profile) {
             load(targetURL, in: newTab)
         } else {
@@ -2168,11 +2188,11 @@ private final class BrowserViewController: NSViewController {
         )
     }
 
-    private func openSettingsTab() {
+    private func openSettingsTab(activeSection: SettingsSection = .overview) {
         if let existingTab = tabs.first(where: \.isShowingSettings) {
             activeTabID = existingTab.id
             showActiveTab()
-            showSettings(in: existingTab)
+            showSettings(in: existingTab, activeSection: activeSection)
             renderTabs()
             syncToolbar()
             return
@@ -2184,7 +2204,7 @@ private final class BrowserViewController: NSViewController {
         showActiveTab()
         renderTabs()
         syncToolbar()
-        showSettings(in: tab)
+        showSettings(in: tab, activeSection: activeSection)
     }
 
     private func openReaderTab(from sourceTab: BrowserTab) async {
@@ -2265,6 +2285,42 @@ private final class BrowserViewController: NSViewController {
             colorScheme: preferences.colorScheme,
             design: preferences.design
         )
+    }
+
+    private func freezePage(in sourceTab: BrowserTab) async {
+        guard sourceTab.isBrowsablePage else {
+            NSSound.beep()
+            return
+        }
+
+        let snapshot = await PageParser.snapshot(
+            from: sourceTab.webView,
+            fallbackURL: sourceTab.url ?? sourceTab.webView.url,
+            fallbackTitle: sourceTab.displayTitle
+        )
+
+        guard !snapshot.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !snapshot.html.isEmpty else {
+            let alert = NSAlert()
+            alert.messageText = "Не удалось заморозить страницу"
+            alert.informativeText = "На странице нет доступного текста для офлайн-снимка."
+            alert.alertStyle = .informational
+            if let window = view.window {
+                await alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+            return
+        }
+
+        sourceTab.webView.stopLoading()
+        sourceTab.loadFrozenPage(
+            snapshot: snapshot,
+            theme: preferences.theme,
+            colorScheme: preferences.colorScheme,
+            design: preferences.design
+        )
+        syncToolbar()
+        renderTabs()
     }
 
     private func showSettings(in tab: BrowserTab, activeSection: SettingsSection = .overview) {
@@ -2533,6 +2589,8 @@ private final class BrowserViewController: NSViewController {
                 addressField.stringValue = "northstar://parser"
             } else if tab.isShowingReader {
                 addressField.stringValue = "northstar://reader"
+            } else if tab.isShowingFrozenPage {
+                addressField.stringValue = "northstar://frozen"
             } else {
                 addressField.stringValue = tab.url?.absoluteString ?? tab.webView.url?.absoluteString ?? ""
             }
@@ -3054,15 +3112,17 @@ private final class BrowserTab {
     private(set) var isShowingParser = false
     private(set) var isShowingReader = false
     private(set) var isShowingCssScraper = false
+    private(set) var isShowingFrozenPage = false
     private(set) var parserSnapshot: PageParseSnapshot?
     private(set) var readerSnapshot: ReaderSnapshot?
     private(set) var cssScrapeSnapshot: CssScrapeSnapshot?
+    private(set) var frozenSnapshot: PageParseSnapshot?
     private var observations: [NSKeyValueObservation] = []
     private var faviconTask: Task<Void, Never>?
     private var faviconCacheKey: String?
 
     var isInternalPage: Bool {
-        isShowingHome || isShowingSettings || isShowingParser || isShowingReader || isShowingCssScraper
+        isShowingHome || isShowingSettings || isShowingParser || isShowingReader || isShowingCssScraper || isShowingFrozenPage
     }
 
     var isBrowsablePage: Bool {
@@ -3084,6 +3144,13 @@ private final class BrowserTab {
 
         if isShowingCssScraper {
             return cssScraperTitle
+        }
+
+        if isShowingFrozenPage {
+            if let frozenTitle = frozenSnapshot?.title, !frozenTitle.isEmpty {
+                return "Заморожено: \(frozenTitle)"
+            }
+            return frozenTitle
         }
 
         if isShowingHome {
@@ -3125,9 +3192,11 @@ private final class BrowserTab {
         isShowingParser = false
         isShowingReader = false
         isShowingCssScraper = false
+        isShowingFrozenPage = false
         parserSnapshot = nil
         readerSnapshot = nil
         cssScrapeSnapshot = nil
+        frozenSnapshot = nil
         title = appName
         url = nil
         progress = 1
@@ -3149,9 +3218,11 @@ private final class BrowserTab {
         isShowingParser = false
         isShowingReader = false
         isShowingCssScraper = false
+        isShowingFrozenPage = false
         parserSnapshot = nil
         readerSnapshot = nil
         cssScrapeSnapshot = nil
+        frozenSnapshot = nil
         title = settingsTitle
         url = nil
         progress = 1
@@ -3171,9 +3242,11 @@ private final class BrowserTab {
         isShowingParser = true
         isShowingReader = false
         isShowingCssScraper = false
+        isShowingFrozenPage = false
         parserSnapshot = snapshot
         readerSnapshot = nil
         cssScrapeSnapshot = nil
+        frozenSnapshot = nil
         title = parserTitle
         url = nil
         progress = 1
@@ -3193,9 +3266,11 @@ private final class BrowserTab {
         isShowingParser = false
         isShowingReader = true
         isShowingCssScraper = false
+        isShowingFrozenPage = false
         parserSnapshot = nil
         readerSnapshot = snapshot
         cssScrapeSnapshot = nil
+        frozenSnapshot = nil
         title = snapshot.title.isEmpty ? readerTitle : snapshot.title
         url = nil
         progress = 1
@@ -3215,9 +3290,11 @@ private final class BrowserTab {
         isShowingParser = false
         isShowingReader = false
         isShowingCssScraper = true
+        isShowingFrozenPage = false
         parserSnapshot = nil
         readerSnapshot = nil
         cssScrapeSnapshot = snapshot
+        frozenSnapshot = nil
         title = cssScraperTitle
         url = nil
         progress = 1
@@ -3231,15 +3308,41 @@ private final class BrowserTab {
         )
     }
 
+    func loadFrozenPage(snapshot: PageParseSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
+        isShowingHome = false
+        isShowingSettings = false
+        isShowingParser = false
+        isShowingReader = false
+        isShowingCssScraper = false
+        isShowingFrozenPage = true
+        parserSnapshot = nil
+        readerSnapshot = nil
+        cssScrapeSnapshot = nil
+        frozenSnapshot = snapshot
+        title = snapshot.title.isEmpty ? frozenTitle : "Заморожено: \(snapshot.title)"
+        url = nil
+        progress = 1
+        faviconTask?.cancel()
+        faviconCacheKey = nil
+        faviconImage = NSImage(systemSymbolName: "snowflake", accessibilityDescription: frozenTitle)
+        notifyChanged()
+        webView.loadHTMLString(
+            FrozenPage.html(snapshot: snapshot, theme: theme, colorScheme: colorScheme, design: design),
+            baseURL: nil
+        )
+    }
+
     func load(_ url: URL) {
         isShowingHome = false
         isShowingSettings = false
         isShowingParser = false
         isShowingReader = false
         isShowingCssScraper = false
+        isShowingFrozenPage = false
         parserSnapshot = nil
         readerSnapshot = nil
         cssScrapeSnapshot = nil
+        frozenSnapshot = nil
         self.url = url
         title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Загрузка"
         progress = 0
@@ -3254,9 +3357,11 @@ private final class BrowserTab {
         isShowingParser = false
         isShowingReader = false
         isShowingCssScraper = false
+        isShowingFrozenPage = false
         parserSnapshot = nil
         readerSnapshot = nil
         cssScrapeSnapshot = nil
+        frozenSnapshot = nil
         url = fileURL
         title = fileURL.lastPathComponent
         progress = 0
@@ -3290,6 +3395,9 @@ private final class BrowserTab {
             progress = webView.isLoading ? webView.estimatedProgress : 1
         } else if isShowingCssScraper {
             title = cssScraperTitle
+            progress = webView.isLoading ? webView.estimatedProgress : 1
+        } else if isShowingFrozenPage {
+            title = frozenSnapshot?.title.isEmpty == false ? "Заморожено: \(frozenSnapshot!.title)" : frozenTitle
             progress = webView.isLoading ? webView.estimatedProgress : 1
         } else {
             url = webView.url ?? url
@@ -3360,6 +3468,10 @@ private final class BrowserTab {
                         self.title = parserTitle
                     } else if self.isShowingReader {
                         self.title = self.readerSnapshot?.title.isEmpty == false ? self.readerSnapshot!.title : readerTitle
+                    } else if self.isShowingCssScraper {
+                        self.title = cssScraperTitle
+                    } else if self.isShowingFrozenPage {
+                        self.title = self.frozenSnapshot?.title.isEmpty == false ? "Заморожено: \(self.frozenSnapshot!.title)" : frozenTitle
                     } else {
                         self.title = Self.normalizedTitle(webView.title) ?? self.title
                     }
@@ -6213,7 +6325,6 @@ private enum AdBlocker {
             "[data-ad-slot]",
             "[data-ad-unit]",
             "[data-adunit]",
-            "[data-google-query-id]",
             "[id*='ad-']",
             "[id*='ad_']",
             "[id*='ads']",
@@ -8350,6 +8461,160 @@ private enum ParserPage {
         ## Ссылки
         \(links.isEmpty ? "Нет данных" : links)
         """
+    }
+}
+
+
+private enum FrozenPage {
+    static func html(snapshot: PageParseSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
+        let colors = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
+        let title = snapshot.title.isEmpty ? "Замороженная страница" : snapshot.title
+        let source = snapshot.url.isEmpty ? "Источник не определён" : snapshot.url
+        let description = snapshot.description.isEmpty ? "" : "<p class=\"excerpt\">\(snapshot.description.htmlEscaped)</p>"
+        let captured = snapshot.capturedAt.isEmpty ? "" : snapshot.capturedAt
+        let paragraphs = readableParagraphs(from: snapshot.visibleText)
+        let content = paragraphs.isEmpty
+            ? #"<p class="empty">В снимке нет доступного текста.</p>"#
+            : paragraphs.map { "<p>\($0.htmlEscaped)</p>" }.joined(separator: "\n")
+        let linkItems = snapshot.links.prefix(24).map { link in
+            let label = link.text.isEmpty ? link.href : link.text
+            return "<li><a href=\"\(link.href.htmlEscaped)\">\(label.htmlEscaped)</a></li>"
+        }.joined()
+        let links = linkItems.isEmpty
+            ? ""
+            : """
+            <section>
+              <h2>Ссылки из снимка</h2>
+              <ul>\(linkItems)</ul>
+            </section>
+            """
+
+        return """
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <base target="_blank">
+          <title>\(frozenTitle): \(title.htmlEscaped)</title>
+          <style>
+            :root {
+              color-scheme: \(colors.colorScheme);
+              --bg: \(colors.background);
+              --panel: \(colors.panel);
+              --text: \(colors.text);
+              --muted: \(colors.muted);
+              --line: \(colors.line);
+              --accent: \(colors.accent);
+              --shadow: \(colors.shadow);
+              --radius: \(design.radius);
+            }
+            * { box-sizing: border-box; }
+            body {
+              margin: 0;
+              min-height: 100vh;
+              background: var(--bg);
+              color: var(--text);
+              font: 17px/1.68 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+            }
+            main {
+              width: min(760px, calc(100vw - 44px));
+              margin: 0 auto;
+              padding: 44px 0 76px;
+            }
+            header {
+              display: grid;
+              gap: 12px;
+              margin-bottom: 24px;
+              padding: 20px;
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+              background: var(--panel);
+              box-shadow: 0 18px 44px var(--shadow);
+            }
+            h1, h2, p { margin: 0; }
+            h1 { font-size: clamp(32px, 5vw, 54px); line-height: 1.05; letter-spacing: 0; }
+            h2 { font-size: 18px; margin-bottom: 10px; }
+            .kicker { color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
+            .source, .excerpt, .meta, .empty { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
+            article {
+              display: grid;
+              gap: 16px;
+              padding: 2px 2px 20px;
+            }
+            article p { font-size: 18px; }
+            section {
+              margin-top: 18px;
+              padding: 18px 20px;
+              border: 1px solid var(--line);
+              border-radius: var(--radius);
+              background: var(--panel);
+              box-shadow: 0 14px 34px var(--shadow);
+            }
+            ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
+            a { color: var(--accent); overflow-wrap: anywhere; }
+          </style>
+        </head>
+        <body>
+          <main>
+            <header>
+              <p class="kicker">\(frozenTitle)</p>
+              <h1>\(title.htmlEscaped)</h1>
+              \(description)
+              <p class="source">\(source.htmlEscaped)</p>
+              <p class="meta">Статичный снимок для чтения офлайн · \(captured.htmlEscaped)</p>
+            </header>
+            <article>
+              \(content)
+            </article>
+            \(links)
+          </main>
+        </body>
+        </html>
+        """
+    }
+
+    private static func readableParagraphs(from text: String) -> [String] {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        let chunks = normalized
+            .components(separatedBy: CharacterSet.newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        if chunks.count >= 3 {
+            return Array(chunks.prefix(180))
+        }
+
+        let sentences = normalized
+            .replacingOccurrences(of: ". ", with: ".\n")
+            .replacingOccurrences(of: "! ", with: "!\n")
+            .replacingOccurrences(of: "? ", with: "?\n")
+            .components(separatedBy: CharacterSet.newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.count > 2 }
+
+        var paragraphs: [String] = []
+        var buffer: [String] = []
+        var bufferLength = 0
+
+        for sentence in sentences.prefix(360) {
+            buffer.append(sentence)
+            bufferLength += sentence.count
+            if bufferLength > 420 {
+                paragraphs.append(buffer.joined(separator: " "))
+                buffer.removeAll()
+                bufferLength = 0
+            }
+        }
+
+        if !buffer.isEmpty {
+            paragraphs.append(buffer.joined(separator: " "))
+        }
+
+        return Array(paragraphs.prefix(180))
     }
 }
 
@@ -10513,6 +10778,8 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     viewMenu.addItem(withTitle: "Остановить загрузку", action: #selector(BrowserViewController.stopLoadingCommand(_:)), keyEquivalent: ".")
     let readerItem = viewMenu.addItem(withTitle: "Режим чтения", action: #selector(BrowserViewController.openReaderCommand(_:)), keyEquivalent: "r")
     readerItem.keyEquivalentModifierMask = [.command, .shift, .option]
+    let freezeItem = viewMenu.addItem(withTitle: "Заморозить страницу", action: #selector(BrowserViewController.freezePageCommand(_:)), keyEquivalent: "f")
+    freezeItem.keyEquivalentModifierMask = [.command, .shift, .option]
     viewMenu.addItem(.separator())
     viewMenu.addItem(withTitle: "Увеличить", action: #selector(BrowserViewController.zoomInCommand(_:)), keyEquivalent: "=")
     viewMenu.addItem(withTitle: "Уменьшить", action: #selector(BrowserViewController.zoomOutCommand(_:)), keyEquivalent: "-")
