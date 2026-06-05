@@ -93,7 +93,7 @@ private final class BrowserViewController: NSViewController {
     private let tabBarView = NSVisualEffectView()
     private let tabBarHeaderView = NSView()
     private let tabBarTitle = NSTextField(labelWithString: "Вкладки")
-    private let newTabButton = IconButton(symbolName: "plus", tooltip: "Новая вкладка", width: 30, height: 28)
+    private let newTabButton = IconButton(symbolName: "plus", tooltip: "Новая вкладка", width: 28, height: 26)
     private let tabScrollView = NSScrollView()
     private let tabStack = FlippedStackView()
 
@@ -506,9 +506,9 @@ private final class BrowserViewController: NSViewController {
         tabBarTitle.stringValue = placement == .top ? appName : "Вкладки"
         tabStack.orientation = isHorizontal ? .horizontal : .vertical
         tabStack.alignment = isHorizontal ? .height : .width
-        tabStack.spacing = preferences.design.tabSpacing
+        tabStack.spacing = isHorizontal ? preferences.design.horizontalTabSpacing : preferences.design.tabSpacing
         tabStack.edgeInsets = isHorizontal
-            ? NSEdgeInsets(top: preferences.design.horizontalTabInset, left: 8, bottom: preferences.design.horizontalTabInset, right: 12)
+            ? NSEdgeInsets(top: preferences.design.horizontalTabInset, left: 4, bottom: preferences.design.horizontalTabInset, right: 10)
             : NSEdgeInsets(top: 10, left: 12, bottom: 14, right: 12)
         tabScrollView.hasHorizontalScroller = isHorizontal
         tabScrollView.hasVerticalScroller = !isHorizontal
@@ -525,7 +525,7 @@ private final class BrowserViewController: NSViewController {
                 tabBarTitle.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.leadingAnchor, constant: -10),
 
                 newTabButton.centerYAnchor.constraint(equalTo: tabBarHeaderView.centerYAnchor),
-                newTabButton.trailingAnchor.constraint(equalTo: tabBarHeaderView.trailingAnchor, constant: -12),
+                newTabButton.trailingAnchor.constraint(equalTo: tabBarHeaderView.trailingAnchor, constant: -6),
 
                 tabScrollView.topAnchor.constraint(equalTo: tabBarView.topAnchor),
                 tabScrollView.leadingAnchor.constraint(equalTo: tabBarHeaderView.trailingAnchor),
@@ -1981,26 +1981,26 @@ private enum DesignMode: Int, CaseIterable {
     var horizontalTabBarHeight: CGFloat {
         switch self {
         case .balanced:
-            return 48
+            return 40
         case .compact:
-            return 42
+            return 36
         case .spacious:
-            return 54
-        case .focus:
             return 44
+        case .focus:
+            return 38
         }
     }
 
     var horizontalTabHeaderWidth: CGFloat {
         switch self {
         case .balanced:
-            return 52
+            return 42
         case .compact:
-            return 46
+            return 38
         case .spacious:
-            return 58
+            return 46
         case .focus:
-            return 48
+            return 40
         }
     }
 
@@ -2020,26 +2020,26 @@ private enum DesignMode: Int, CaseIterable {
     var horizontalTabRowHeight: CGFloat {
         switch self {
         case .balanced:
-            return 34
-        case .compact:
             return 30
+        case .compact:
+            return 28
         case .spacious:
-            return 38
-        case .focus:
             return 32
+        case .focus:
+            return 29
         }
     }
 
     var horizontalTabWidth: CGFloat {
         switch self {
         case .balanced:
-            return 210
+            return 188
         case .compact:
-            return 176
+            return 158
         case .spacious:
-            return 232
+            return 210
         case .focus:
-            return 192
+            return 172
         }
     }
 
@@ -2059,26 +2059,39 @@ private enum DesignMode: Int, CaseIterable {
     var horizontalTabInset: CGFloat {
         switch self {
         case .balanced:
-            return 6
+            return 4
         case .compact:
-            return 5
+            return 3
         case .spacious:
-            return 7
-        case .focus:
             return 5
+        case .focus:
+            return 4
+        }
+    }
+
+    var horizontalTabSpacing: CGFloat {
+        switch self {
+        case .balanced:
+            return 2
+        case .compact:
+            return 1
+        case .spacious:
+            return 3
+        case .focus:
+            return 2
         }
     }
 
     var rowCornerRadius: CGFloat {
         switch self {
         case .balanced:
-            return 12
+            return 7
         case .compact:
-            return 10
+            return 6
         case .spacious:
-            return 14
+            return 8
         case .focus:
-            return 10
+            return 6
         }
     }
 
@@ -2691,7 +2704,7 @@ private final class TabRowView: NSView {
     private let indicatorView = NSView()
     private let titleField = NSTextField(labelWithString: "Новая вкладка")
     private let detailField = NSTextField(labelWithString: "")
-    private let closeButton = IconButton(symbolName: "xmark", tooltip: "Закрыть вкладку", width: 24, height: 22)
+    private let closeButton = IconButton(symbolName: "xmark", tooltip: "Закрыть вкладку", width: 20, height: 20)
     private var isActive = false
     private var isHovered = false
     private var isHorizontalLayout = false
@@ -2783,7 +2796,7 @@ private final class TabRowView: NSView {
         heightConstraint?.constant = isHorizontal ? design.horizontalTabRowHeight : design.verticalTabRowHeight
         indicatorView.isHidden = isHorizontal
         indicatorWidthConstraint?.constant = isHorizontal ? 0 : 3
-        titleLeadingConstraint?.constant = isHorizontal ? 14 : 18
+        titleLeadingConstraint?.constant = isHorizontal ? 12 : 18
         titleTopConstraint?.isActive = false
         titleCenterYConstraint?.isActive = true
         updateStyle()
@@ -2826,18 +2839,18 @@ private final class TabRowView: NSView {
 
     private func updateStyle() {
         let accent = NSColor.controlAccentColor
-        titleField.font = .systemFont(ofSize: isHorizontalLayout ? 12.5 : 12.8, weight: isActive ? .semibold : .medium)
+        titleField.font = .systemFont(ofSize: isHorizontalLayout ? 12.2 : 12.8, weight: isActive ? .semibold : .medium)
         titleField.textColor = isActive ? .labelColor : .secondaryLabelColor
         detailField.textColor = .secondaryLabelColor
 
         if isHorizontalLayout {
-            let activeColor = NSColor.controlBackgroundColor.withAlphaComponent(0.82)
-            let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.28)
+            let activeColor = NSColor.controlBackgroundColor.withAlphaComponent(0.52)
+            let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.2)
             layer?.backgroundColor = isActive
                 ? activeColor.cgColor
                 : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor)
-            layer?.borderWidth = 0
-            layer?.borderColor = NSColor.clear.cgColor
+            layer?.borderWidth = isActive ? 0.5 : 0
+            layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.16).cgColor
         } else {
             let activeColor = accent.withAlphaComponent(0.11)
             let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.22)
@@ -2851,7 +2864,7 @@ private final class TabRowView: NSView {
                 : NSColor.clear.cgColor
         }
 
-        closeButton.alphaValue = isActive || isHovered ? 0.72 : 0
+        closeButton.alphaValue = isActive || isHovered ? 0.62 : 0
         closeButton.contentTintColor = isActive ? .secondaryLabelColor : .tertiaryLabelColor
     }
 }
