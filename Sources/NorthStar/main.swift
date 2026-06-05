@@ -708,6 +708,10 @@ private final class BrowserViewController: NSViewController {
     }
 
     private func load(_ url: URL, in tab: BrowserTab) {
+        if AdBlocker.shouldBlock(url) {
+            return
+        }
+
         guard NetworkPolicy.allows(url, profile: tab.profile) else {
             showBlockedURL(url, profile: tab.profile)
             syncToolbar()
@@ -851,6 +855,11 @@ extension BrowserViewController: WKNavigationDelegate {
             return
         }
 
+        if AdBlocker.shouldBlock(url) {
+            decisionHandler(.cancel)
+            return
+        }
+
         let internalSchemes: Set<String> = ["http", "https", "file", "about", "data", "blob"]
         let scheme = url.scheme?.lowercased()
 
@@ -875,6 +884,10 @@ extension BrowserViewController: WKNavigationDelegate {
 extension BrowserViewController: WKUIDelegate {
     func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration, for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
         if navigationAction.targetFrame == nil, let url = navigationAction.request.url {
+            if AdBlocker.shouldBlock(url) {
+                return nil
+            }
+
             let profile = tab(for: webView)?.profile ?? activeTab?.profile ?? .system
             addTab(profile: profile, url: url, activate: true)
         }
@@ -915,6 +928,7 @@ private final class BrowserTab {
     init(profile: NetworkProfile) {
         self.profile = profile
         webView = WKWebView(frame: .zero, configuration: profile.makeWebViewConfiguration())
+        webView.customUserAgent = BrowserUserAgent.safari
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
 
@@ -1353,7 +1367,9 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
     @MainActor
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
+        configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        AdBlocker.install(in: configuration)
 
         switch self {
         case .system:
@@ -1370,6 +1386,253 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
 
         return configuration
     }
+}
+
+private enum BrowserUserAgent {
+    static let applicationName = "Version/18.5 Safari/605.1.15"
+    static let safari = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) \(applicationName)"
+}
+
+private enum AdBlocker {
+    private static let contentRuleIdentifier = "NorthStarAggressiveAdBlocker.v1"
+
+    private static let blockedHostSuffixes = [
+        "2mdn.net",
+        "adform.net",
+        "adnxs.com",
+        "adsafeprotected.com",
+        "adsrvr.org",
+        "adservice.google.com",
+        "adservice.google.pl",
+        "advertising.com",
+        "amazon-adsystem.com",
+        "appnexus.com",
+        "bidswitch.net",
+        "casalemedia.com",
+        "consensu.org",
+        "criteo.com",
+        "criteo.net",
+        "doubleclick.net",
+        "googlesyndication.com",
+        "googletagmanager.com",
+        "googletagservices.com",
+        "google-analytics.com",
+        "imasdk.googleapis.com",
+        "moatads.com",
+        "nitropay.com",
+        "openx.net",
+        "outbrain.com",
+        "pubmatic.com",
+        "quantserve.com",
+        "rubiconproject.com",
+        "scorecardresearch.com",
+        "smartadserver.com",
+        "taboola.com",
+        "yieldmo.com"
+    ]
+
+    private static let blockedURLFragments = [
+        "/adserver/",
+        "/ads/",
+        "/advert/",
+        "/banners/",
+        "/gampad/",
+        "/pagead/",
+        "adservice.",
+        "adsystem",
+        "googleads",
+        "prebid",
+        "vast?"
+    ]
+
+    static func shouldBlock(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else {
+            return false
+        }
+
+        let host = url.host(percentEncoded: false)?.lowercased() ?? ""
+        if blockedHostSuffixes.contains(where: { host == $0 || host.hasSuffix(".\($0)") }) {
+            return true
+        }
+
+        let absoluteString = url.absoluteString.lowercased()
+        return blockedURLFragments.contains { absoluteString.contains($0) }
+    }
+
+    @MainActor
+    static func install(in configuration: WKWebViewConfiguration) {
+        let userContentController = WKUserContentController()
+        userContentController.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        configuration.userContentController = userContentController
+
+        guard let store = WKContentRuleListStore.default() else {
+            return
+        }
+
+        store.lookUpContentRuleList(forIdentifier: contentRuleIdentifier) { existingList, _ in
+            if let existingList {
+                DispatchQueue.main.async {
+                    userContentController.add(existingList)
+                }
+                return
+            }
+
+            store.compileContentRuleList(forIdentifier: contentRuleIdentifier, encodedContentRuleList: contentRules) { compiledList, _ in
+                guard let compiledList else { return }
+                DispatchQueue.main.async {
+                    userContentController.add(compiledList)
+                }
+            }
+        }
+    }
+
+    private static let contentRules = """
+    [
+      { "trigger": { "url-filter": ".*2mdn\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adform\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adnxs\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adsafeprotected\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adsrvr\\\\.org.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*adservice\\\\.google\\\\..*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*advertising\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*amazon-adsystem\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*appnexus\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*bidswitch\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*casalemedia\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*consensu\\\\.org.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*criteo\\\\.(com|net).*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*doubleclick\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*googlesyndication\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*googletag(manager|services)\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*google-analytics\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*imasdk\\\\.googleapis\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*moatads\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*nitropay\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*openx\\\\.net.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*outbrain\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*pubmatic\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*quantserve\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*rubiconproject\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*scorecardresearch\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*smartadserver\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*taboola\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*yieldmo\\\\.com.*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": ".*(/adserver/|/ads/|/advert/|/banners/|/gampad/|/pagead/|googleads|prebid|vast\\\\?).*" }, "action": { "type": "block" } }
+    ]
+    """
+
+    private static let script = """
+    (() => {
+      const selectors = [
+        ".adsbygoogle",
+        ".ad-banner",
+        ".ad-container",
+        ".ad-slot",
+        ".ad_unit",
+        ".adbox",
+        ".adframe",
+        ".adslot",
+        ".advert",
+        ".advertisement",
+        ".banner-ad",
+        ".fc-consent-root",
+        ".google-auto-placed",
+        ".nitro-ad",
+        ".nitro-ad-container",
+        ".qc-cmp2-container",
+        ".sp_message_container",
+        "#onetrust-consent-sdk",
+        "[aria-label='Advertisement']",
+        "[class*=' ad-']",
+        "[class*=' ads']",
+        "[class*='advert']",
+        "[class*='nitro']",
+        "[data-ad]",
+        "[data-ad-client]",
+        "[data-ad-slot]",
+        "[data-google-query-id]",
+        "[id*='ad-']",
+        "[id*='ads']",
+        "[id*='advert']",
+        "[id*='nitro']",
+        "iframe[src*='2mdn.net']",
+        "iframe[src*='adservice.google']",
+        "iframe[src*='doubleclick.net']",
+        "iframe[src*='googlesyndication.com']",
+        "iframe[src*='imasdk.googleapis.com']",
+        "iframe[src*='nitropay.com']",
+        "ins.adsbygoogle"
+      ];
+      const blockedFragments = [
+        "2mdn.net",
+        "adform.net",
+        "adnxs.com",
+        "adsafeprotected.com",
+        "adsrvr.org",
+        "adservice.google.",
+        "advertising.com",
+        "amazon-adsystem.com",
+        "appnexus.com",
+        "bidswitch.net",
+        "casalemedia.com",
+        "consensu.org",
+        "criteo.com",
+        "criteo.net",
+        "doubleclick.net",
+        "googlesyndication.com",
+        "googletagmanager.com",
+        "googletagservices.com",
+        "google-analytics.com",
+        "googleads",
+        "imasdk.googleapis.com",
+        "moatads.com",
+        "nitropay.com",
+        "openx.net",
+        "outbrain.com",
+        "pagead/",
+        "prebid",
+        "pubmatic.com",
+        "rubiconproject.com",
+        "scorecardresearch.com",
+        "smartadserver.com",
+        "taboola.com",
+        "yieldmo.com"
+      ];
+      const shouldBlock = value => {
+        const text = String(value || "").toLowerCase();
+        return blockedFragments.some(fragment => text.includes(fragment));
+      };
+      const selectorText = selectors.join(",");
+      const ensureStyle = () => {
+        if (document.getElementById("northstar-adblock-style")) return;
+        const style = document.createElement("style");
+        style.id = "northstar-adblock-style";
+        style.textContent = selectorText + "{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;max-height:0!important;max-width:0!important;overflow:hidden!important;}";
+        (document.head || document.documentElement).appendChild(style);
+      };
+      const removeMatches = () => {
+        ensureStyle();
+        try {
+          document.querySelectorAll(selectorText).forEach(element => element.remove());
+        } catch (_) {}
+        document.querySelectorAll("iframe,img,script,link,source,video,ins").forEach(element => {
+          const url = element.currentSrc || element.src || element.href || "";
+          if (shouldBlock(url)) element.remove();
+        });
+      };
+      const start = () => {
+        removeMatches();
+        const observer = new MutationObserver(() => removeMatches());
+        observer.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "href", "class", "id"] });
+      };
+      if (document.documentElement) {
+        start();
+      } else {
+        document.addEventListener("DOMContentLoaded", start, { once: true });
+      }
+    })();
+    """
 }
 
 private enum NetworkPolicy {

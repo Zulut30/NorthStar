@@ -24,6 +24,8 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Smart address bar that accepts URLs, localhost addresses, file URLs, or search text.
 - Search engine picker in the toolbar, on the home screen, and in Settings.
 - Built-in engines: DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
+- Always-on ad blocking with WebKit content rules, host blocking, and DOM cleanup for injected ad containers.
+- Safari-like user agent to reduce search-engine bot challenges from custom WebKit fingerprints.
 - Theme picker for System, Light, and Dark.
 - Per-tab network modes: System, Private, Tor SOCKS, and Localhost.
 - New-window handling opens links into a new NorthStar tab instead of losing context.
@@ -150,6 +152,7 @@ Core pieces:
 - `BrowserTab` wraps a `WKWebView` and observes title, URL, progress, loading, and history state.
 - `AppPreferences` stores theme, search engine, and tab placement in `UserDefaults`.
 - `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
+- `AdBlocker` installs WebKit content rules, blocks known ad hosts, and removes visible ad containers.
 - `NetworkPolicy` blocks disallowed URLs in Localhost mode.
 
 ## Roadmap
@@ -157,7 +160,6 @@ Core pieces:
 - Bookmarks and history UI.
 - Downloads with progress.
 - Find in page.
-- Content blocking.
 - Per-site permissions.
 - Optional custom SOCKS/HTTP proxy settings.
 - App icon and signed release packaging.
