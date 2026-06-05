@@ -8,6 +8,7 @@ import WebKit
 private let appName = "NorthStar"
 private let settingsTitle = "Настройки"
 private let parserTitle = "Парсер"
+private let readerTitle = "Чтение"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
@@ -146,6 +147,8 @@ private final class BrowserViewController: NSViewController {
     private let backButton = IconButton(symbolName: "chevron.left", tooltip: "Назад")
     private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Вперёд")
     private let homeButton = IconButton(symbolName: "house", tooltip: "Домой")
+    private let bookmarkButton = IconButton(symbolName: "star", tooltip: "Добавить в закладки")
+    private let readerButton = IconButton(symbolName: "text.rectangle.page", tooltip: "Режим чтения")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
     private let hardReloadButton = ToolbarActionButton(symbolName: "arrow.clockwise.circle", title: "Без кэша", tooltip: "Жёсткое обновление без кэша", width: 94)
     private let privateButton = ToolbarActionButton(symbolName: "eye.slash", title: "Приватно", tooltip: "Новая приватная вкладка", width: 92)
@@ -683,6 +686,29 @@ private final class BrowserViewController: NSViewController {
         preferences.searchEngine = SearchEngine.allCases[index]
     }
 
+    private func configureSearchEnginePopupItems() {
+        searchEnginePopup.removeAllItems()
+        let menu = NSMenu()
+        for engine in SearchEngine.allCases {
+            let item = NSMenuItem(title: engine.title, action: #selector(searchEngineSelectionChanged(_:)), keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+
+            guard let logoURL = URL(string: engine.logoURL) else { continue }
+            Task { @MainActor [weak item] in
+                guard let item,
+                      let (data, _) = try? await URLSession.shared.data(from: logoURL),
+                      let image = NSImage(data: data) else {
+                    return
+                }
+
+                image.size = NSSize(width: 16, height: 16)
+                item.image = image
+            }
+        }
+        searchEnginePopup.menu = menu
+    }
+
     @objc private func preferencesChanged(_ notification: Notification) {
         applyPreferences(redrawHomeTabs: true)
     }
@@ -776,8 +802,7 @@ private final class BrowserViewController: NSViewController {
         searchEnginePopup.target = self
         searchEnginePopup.action = #selector(searchEngineSelectionChanged(_:))
         searchEnginePopup.toolTip = "Поисковая система"
-        searchEnginePopup.removeAllItems()
-        searchEnginePopup.addItems(withTitles: SearchEngine.allCases.map(\.title))
+        configureSearchEnginePopupItems()
 
         networkPopup.translatesAutoresizingMaskIntoConstraints = false
         networkPopup.controlSize = .regular
@@ -803,6 +828,10 @@ private final class BrowserViewController: NSViewController {
         forwardButton.action = #selector(goForwardCommand(_:))
         homeButton.target = self
         homeButton.action = #selector(goHome(_:))
+        bookmarkButton.target = self
+        bookmarkButton.action = #selector(toggleBookmarkCommand(_:))
+        readerButton.target = self
+        readerButton.action = #selector(openReaderCommand(_:))
         reloadButton.target = self
         reloadButton.action = #selector(reloadCommand(_:))
         hardReloadButton.target = self
@@ -821,7 +850,7 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [brandTitleField, backButton, forwardButton, homeButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
+        [brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -852,6 +881,12 @@ private final class BrowserViewController: NSViewController {
             homeButton.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 8),
             homeButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
+            bookmarkButton.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 8),
+            bookmarkButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            readerButton.leadingAnchor.constraint(equalTo: bookmarkButton.trailingAnchor, constant: 8),
+            readerButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
             settingsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
             settingsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
@@ -873,7 +908,7 @@ private final class BrowserViewController: NSViewController {
             parserButton.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -8),
             parserButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            addressField.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 12),
+            addressField.leadingAnchor.constraint(equalTo: readerButton.trailingAnchor, constant: 12),
             addressField.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -12),
             addressField.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             addressField.heightAnchor.constraint(equalToConstant: 30),
@@ -3586,6 +3621,33 @@ private enum SearchRegion: Int, CaseIterable {
         }
     }
 
+    var emoji: String {
+        switch self {
+        case .automatic:
+            return "🌍"
+        case .poland:
+            return "🇵🇱"
+        case .unitedStates:
+            return "🇺🇸"
+        case .unitedKingdom:
+            return "🇬🇧"
+        case .germany:
+            return "🇩🇪"
+        case .france:
+            return "🇫🇷"
+        case .spain:
+            return "🇪🇸"
+        case .ukraine:
+            return "🇺🇦"
+        case .russia:
+            return "🇷🇺"
+        }
+    }
+
+    var displayTitle: String {
+        "\(emoji) \(title)"
+    }
+
     var identifier: String {
         switch self {
         case .automatic:
@@ -3732,6 +3794,31 @@ private enum SearchLanguage: Int, CaseIterable {
         }
     }
 
+    var emoji: String {
+        switch self {
+        case .automatic:
+            return "🌐"
+        case .polish:
+            return "🇵🇱"
+        case .russian:
+            return "🇷🇺"
+        case .english:
+            return "🇺🇸"
+        case .german:
+            return "🇩🇪"
+        case .french:
+            return "🇫🇷"
+        case .spanish:
+            return "🇪🇸"
+        case .ukrainian:
+            return "🇺🇦"
+        }
+    }
+
+    var displayTitle: String {
+        "\(emoji) \(title)"
+    }
+
     var identifier: String {
         switch self {
         case .automatic:
@@ -3829,6 +3916,29 @@ private enum SearchEngine: Int, CaseIterable {
         case .startpage:
             return "Startpage"
         }
+    }
+
+    var faviconHost: String {
+        switch self {
+        case .duckDuckGo:
+            return "duckduckgo.com"
+        case .google:
+            return "google.com"
+        case .yandex:
+            return "yandex.ru"
+        case .brave:
+            return "brave.com"
+        case .bing:
+            return "bing.com"
+        case .ecosia:
+            return "ecosia.org"
+        case .startpage:
+            return "startpage.com"
+        }
+    }
+
+    var logoURL: String {
+        "https://icons.duckduckgo.com/ip3/\(faviconHost).ico"
     }
 
     var identifier: String {
@@ -5996,19 +6106,20 @@ private enum HomePage {
     static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry]) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
-        let region = searchRegion.title.htmlEscaped
-        let language = searchLanguage.title.htmlEscaped
+        let region = searchRegion.displayTitle.htmlEscaped
+        let language = searchLanguage.displayTitle.htmlEscaped
+        let engineLogo = searchEngine.logoURL.htmlEscaped
         let engineOptions = SearchEngine.allCases.map { option in
             let selected = option == searchEngine ? " selected" : ""
-            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+            return "<option value=\"\(option.identifier)\" data-logo=\"\(option.logoURL.htmlEscaped)\"\(selected)>\(option.title.htmlEscaped)</option>"
         }.joined()
         let regionOptions = SearchRegion.allCases.map { option in
             let selected = option == searchRegion ? " selected" : ""
-            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.displayTitle.htmlEscaped)</option>"
         }.joined()
         let languageOptions = SearchLanguage.allCases.map { option in
             let selected = option == searchLanguage ? " selected" : ""
-            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.displayTitle.htmlEscaped)</option>"
         }.joined()
         let recentMarkup = recentHistory.prefix(6).map { entry in
             """
@@ -6170,6 +6281,32 @@ private enum HomePage {
               color: var(--text);
               background: transparent;
               cursor: pointer;
+            }
+            .select-with-logo {
+              display: grid;
+              grid-template-columns: 20px minmax(0, 1fr);
+              align-items: center;
+              gap: 8px;
+              min-width: 0;
+            }
+            .select-logo {
+              width: 18px;
+              height: 18px;
+              border-radius: 5px;
+              object-fit: contain;
+              background: color-mix(in srgb, var(--panel-strong) 72%, white);
+              box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
+            }
+            .context-engine {
+              display: inline-flex;
+              align-items: center;
+              gap: 6px;
+            }
+            .context-engine img {
+              width: 16px;
+              height: 16px;
+              border-radius: 4px;
+              object-fit: contain;
             }
             button {
               border: 0;
@@ -6406,12 +6543,15 @@ private enum HomePage {
                 </label>
                 <label class="filter">
                   <span>Движок</span>
-                  <select id="engine" name="engine" aria-label="Поисковая система">
-                    \(engineOptions)
-                  </select>
+                  <div class="select-with-logo">
+                    <img class="select-logo" id="engineLogo" src="\(engineLogo)" alt="" width="18" height="18">
+                    <select id="engine" name="engine" aria-label="Поисковая система">
+                      \(engineOptions)
+                    </select>
+                  </div>
                 </label>
               </div>
-              <div class="context">\(engine) · \(region) · \(language)</div>
+              <div class="context"><span class="context-engine"><img id="contextEngineLogo" src="\(engineLogo)" alt="" width="16" height="16"> \(engine)</span> · \(region) · \(language)</div>
             </section>
             <section class="dashboard" aria-label="Быстрый старт">
               <div class="stack">
@@ -6455,7 +6595,16 @@ private enum HomePage {
             const engine = document.getElementById("engine");
             const region = document.getElementById("region");
             const language = document.getElementById("language");
+            const engineLogo = document.getElementById("engineLogo");
+            const contextEngineLogo = document.getElementById("contextEngineLogo");
+            const updateEngineLogo = () => {
+              const option = engine.selectedOptions[0];
+              if (!option?.dataset.logo) return;
+              if (engineLogo) engineLogo.src = option.dataset.logo;
+              if (contextEngineLogo) contextEngineLogo.src = option.dataset.logo;
+            };
             const updateContext = () => {
+              updateEngineLogo();
               const params = new URLSearchParams({
                 engine: engine.value,
                 region: region.value,
@@ -6463,6 +6612,7 @@ private enum HomePage {
               });
               window.location.href = "\(northStarSearchScheme)://engine?" + params.toString();
             };
+            updateEngineLogo();
             [engine, region, language].forEach(control => {
               control.addEventListener("change", updateContext);
             });
@@ -6553,6 +6703,7 @@ private enum SettingsPage {
     static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) -> String {
         let palette = HomePalette(theme: theme, colorScheme: preferences.colorScheme, design: preferences.design)
         let activeSectionID = activeSection.identifier.htmlEscaped
+        let searchEngineLogo = preferences.searchEngine.logoURL.htmlEscaped
         let defaultAppStatusMarkup = defaultAppStatus.map { message in
             """
             <div class="notice">\(message.htmlEscaped)</div>
@@ -6569,15 +6720,15 @@ private enum SettingsPage {
         }.joined()
         let searchOptions = SearchEngine.allCases.map { option in
             let selected = option == preferences.searchEngine ? " selected" : ""
-            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+            return "<option value=\"\(option.identifier)\" data-logo=\"\(option.logoURL.htmlEscaped)\"\(selected)>\(option.title.htmlEscaped)</option>"
         }.joined()
         let regionOptions = SearchRegion.allCases.map { option in
             let selected = option == preferences.searchRegion ? " selected" : ""
-            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.displayTitle.htmlEscaped)</option>"
         }.joined()
         let languageOptions = SearchLanguage.allCases.map { option in
             let selected = option == preferences.searchLanguage ? " selected" : ""
-            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.displayTitle.htmlEscaped)</option>"
         }.joined()
         let tabOptions = TabPlacement.allCases.map { option in
             let selected = option == preferences.tabPlacement ? " selected" : ""
@@ -6848,6 +6999,24 @@ private enum SettingsPage {
               outline: 0;
               border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
             }
+            .select-with-logo {
+              display: grid;
+              grid-template-columns: 22px minmax(0, 1fr);
+              align-items: center;
+              gap: 10px;
+              min-width: 0;
+            }
+            .select-logo {
+              width: 20px;
+              height: 20px;
+              border-radius: 6px;
+              object-fit: contain;
+              background: color-mix(in srgb, var(--panel-strong) 72%, white);
+              box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
+            }
+            .select-with-logo select {
+              padding-left: 0;
+            }
             .metric-grid {
               display: grid;
               grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -6989,13 +7158,13 @@ private enum SettingsPage {
                 <div class="panel-head">
                   <div>
                     <h1>Обзор</h1>
-                    <p class="muted">\(preferences.searchEngine.title.htmlEscaped) · \(preferences.searchRegion.title.htmlEscaped) · \(preferences.searchLanguage.title.htmlEscaped)</p>
+                    <p class="muted">\(preferences.searchEngine.title.htmlEscaped) · \(preferences.searchRegion.displayTitle.htmlEscaped) · \(preferences.searchLanguage.displayTitle.htmlEscaped)</p>
                   </div>
                 </div>
                 <div class="overview-grid">
                   <button class="overview-card" type="button" data-section="search">
                     <h3>Поиск</h3>
-                    <span>\(preferences.searchEngine.title.htmlEscaped), \(preferences.searchRegion.title.htmlEscaped), \(preferences.searchLanguage.title.htmlEscaped)</span>
+                    <span>\(preferences.searchEngine.title.htmlEscaped), \(preferences.searchRegion.displayTitle.htmlEscaped), \(preferences.searchLanguage.displayTitle.htmlEscaped)</span>
                   </button>
                   <button class="overview-card" type="button" data-section="appearance">
                     <h3>Внешний вид</h3>
@@ -7027,7 +7196,10 @@ private enum SettingsPage {
                   <div class="setting-card">
                     <label>
                       <span>Поисковая система</span>
-                      <select id="search" data-setting>\(searchOptions)</select>
+                      <div class="select-with-logo">
+                        <img class="select-logo" id="searchLogo" src="\(searchEngineLogo)" alt="" width="20" height="20">
+                        <select id="search" data-setting>\(searchOptions)</select>
+                      </div>
                     </label>
                   </div>
                   <div class="setting-card">
@@ -7224,6 +7396,14 @@ private enum SettingsPage {
               });
               window.location.href = "\(northStarSettingsScheme)://update?" + params.toString();
             };
+            const searchSelect = document.getElementById("search");
+            const searchLogo = document.getElementById("searchLogo");
+            const updateSearchLogo = () => {
+              const option = searchSelect.selectedOptions[0];
+              if (option?.dataset.logo && searchLogo) searchLogo.src = option.dataset.logo;
+            };
+            updateSearchLogo();
+            searchSelect.addEventListener("change", updateSearchLogo);
             document.querySelectorAll("[data-setting]").forEach(select => {
               select.addEventListener("change", update);
             });
