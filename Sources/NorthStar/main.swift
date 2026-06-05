@@ -13,6 +13,7 @@ private let cssScraperTitle = "CSS Scrapper"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
+private let northStarDownloadScheme = "northstar-download"
 
 /// Compact North Star mark from Resources/NorthStarLogo.svg for embedding in internal pages.
 private let brandMarkSVG = ##"<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><path d="M512 150L604 382L856 512L604 642L512 874L420 642L168 512L420 382L512 150Z" fill="rgba(255,255,255,0.32)"/><path d="M512 180L558 466L844 512L558 558L512 844L466 558L180 512L466 466L512 180Z" fill="#0b2530" opacity="0.85"/><path d="M512 238L542 482L718 512L542 542L512 786L482 542L306 512L482 482L512 238Z" fill="#ffffff"/><circle cx="512" cy="512" r="34" fill="#0b2530"/><circle cx="512" cy="512" r="13" fill="#ffffff"/></svg>"##
@@ -2574,6 +2575,19 @@ private final class BrowserViewController: NSViewController {
         }
     }
 
+    private func startImageDownload(_ rawURL: String, in webView: WKWebView) {
+        guard let imageURL = URL(string: rawURL),
+              let scheme = imageURL.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else {
+            NSSound.beep()
+            return
+        }
+
+        webView.startDownload(using: URLRequest(url: imageURL)) { [weak self] download in
+            self?.prepareDownload(download, from: webView)
+        }
+    }
+
     private func appendCurrencyConversionItem(to menu: NSMenu, webView: WKWebView) {
         if !menu.items.isEmpty {
             menu.addItem(.separator())
@@ -2883,6 +2897,15 @@ extension BrowserViewController: WKNavigationDelegate {
         if url.scheme?.lowercased() == northStarSettingsScheme {
             if let tab = tab(for: webView) {
                 handleInternalSettingsURL(url, in: tab)
+            }
+            decisionHandler(.cancel)
+            return
+        }
+
+        if url.scheme?.lowercased() == northStarDownloadScheme {
+            if let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+               let target = components.queryItems?.first(where: { $0.name == "url" })?.value {
+                startImageDownload(target, in: webView)
             }
             decisionHandler(.cancel)
             return
@@ -7732,35 +7755,47 @@ private enum CssScraperPage {
 
         let colorSwatches = snapshot.colors.isEmpty ? emptyNote : snapshot.colors.map { item in
             """
-            <button class="swatch" data-copy="\(item.label)" title="Скопировать \(item.label)">
-              <span class="chip" style="background:\(item.label)"></span>
-              <span class="hex">\(item.label)</span>
-              <span class="cnt">\(item.count)</span>
+            <button class="swatch" data-copy="\(item.label)" style="--c:\(item.label)" title="Скопировать \(item.label)">
+              <span class="swatch-fill"></span>
+              <span class="swatch-meta">
+                <span class="hex">\(item.label.uppercased())</span>
+                <span class="cnt">\(item.count)×</span>
+              </span>
             </button>
             """
         }.joined()
 
-        let fontRows = snapshot.fonts.isEmpty ? emptyNote : snapshot.fonts.map { item in
-            """
-            <li>
-              <span class="fname" style="font-family:'\(item.label.htmlEscaped)', system-ui">\(item.label.htmlEscaped)</span>
-              <span class="cnt">\(item.count)</span>
-            </li>
+        let fontCards = snapshot.fonts.isEmpty ? emptyNote : snapshot.fonts.map { item in
+            let safe = item.label.htmlEscaped
+            return """
+            <div class="fontcard">
+              <div class="font-sample" style="font-family:'\(safe)', system-ui">Aa Привет 123</div>
+              <div class="font-meta"><span class="fname">\(safe)</span><span class="cnt">\(item.count)×</span></div>
+            </div>
             """
         }.joined()
 
         let sizeChips = snapshot.fontSizes.isEmpty ? emptyNote : snapshot.fontSizes.map { item in
-            "<span class=\"size-chip\">\(item.label.htmlEscaped)<small>\(item.count)</small></span>"
+            "<span class=\"size-chip\">\(item.label.htmlEscaped)<small>\(item.count)×</small></span>"
         }.joined()
 
-        let imageCards = snapshot.images.isEmpty ? emptyNote : snapshot.images.prefix(72).map { image in
+        let imageCount = snapshot.images.count
+        let imageCards = snapshot.images.isEmpty ? emptyNote : snapshot.images.prefix(96).map { image in
             let dimension = image.width > 0 ? "\(image.width)×\(image.height)" : "—"
             let caption = image.alt.isEmpty ? "без описания" : image.alt.htmlEscaped
             return """
-            <a class="imgcard" href="\(image.src.htmlEscaped)">
-              <span class="thumb"><img loading="lazy" src="\(image.src.htmlEscaped)" alt=""></span>
-              <span class="imeta"><span class="iname">\(caption)</span><span class="idim">\(dimension)</span></span>
-            </a>
+            <figure class="imgcard">
+              <a class="thumb" href="\(image.src.htmlEscaped)" title="Открыть в новой вкладке"><img loading="lazy" src="\(image.src.htmlEscaped)" alt=""></a>
+              <figcaption>
+                <span class="iname" title="\(caption)">\(caption)</span>
+                <span class="irow">
+                  <span class="idim">\(dimension)</span>
+                  <button class="dl" data-src="\(image.src.htmlEscaped)" title="Скачать изображение" aria-label="Скачать">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 11l5 5 5-5"/><path d="M5 20h14"/></svg>
+                  </button>
+                </span>
+              </figcaption>
+            </figure>
             """
         }.joined()
 
@@ -7770,7 +7805,7 @@ private enum CssScraperPage {
         let stats = [
             stat("\(snapshot.colors.count)", "Цветов"),
             stat("\(snapshot.fonts.count)", "Шрифтов"),
-            stat("\(snapshot.images.count)", "Медиа"),
+            stat("\(imageCount)", "Медиа"),
             stat("\(snapshot.svgCount)", "SVG"),
             stat("\(snapshot.videoCount)", "Видео"),
             stat("\(snapshot.stylesheetCount)", "Таблиц стилей"),
@@ -7787,6 +7822,10 @@ private enum CssScraperPage {
             metaRow("viewport", snapshot.viewport),
             metaRow("generator", snapshot.generator)
         ].joined()
+
+        let mediaHead = snapshot.images.isEmpty
+            ? "<div class=\"sec-head\"><h2>Медиафайлы</h2></div>"
+            : "<div class=\"sec-head\"><h2>Медиафайлы <small>\(imageCount)</small></h2><button class=\"ghost\" id=\"dlAll\">Скачать все</button></div>"
 
         return """
         <!doctype html>
@@ -7810,63 +7849,109 @@ private enum CssScraperPage {
               --radius: \(design.radius);
             }
             * { box-sizing: border-box; }
-            body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
-              font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
-            main { width: min(100vw - 40px, \(design.settingsWidth)); margin: 0 auto; padding: 30px 0 56px; }
-            header { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
-            .logo { width: 46px; height: 46px; border-radius: 13px; display: grid; place-items: center; flex: none;
-              background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #8a5cff));
-              color: #07121a; }
-            .logo svg { width: 26px; height: 26px; }
-            header h1 { margin: 0; font-size: 21px; }
-            header p { margin: 3px 0 0; color: var(--muted); font-size: 13px; word-break: break-all; }
-            section { background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line);
-              border-radius: var(--radius); padding: 18px 20px; margin-bottom: 18px; box-shadow: var(--shadow); }
-            section h2 { margin: 0 0 14px; font-size: 15px; letter-spacing: 0.01em; }
-            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
-            .stat { background: var(--panel-strong); border: 1px solid var(--line); border-radius: 12px; padding: 12px; text-align: center; }
-            .stat strong { display: block; font-size: 22px; }
+            body { margin: 0; min-height: 100vh; color: var(--text);
+              background:
+                radial-gradient(900px 520px at 8% -8%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 60%),
+                radial-gradient(900px 600px at 100% 0%, color-mix(in srgb, var(--accent) 11%, transparent), transparent 62%),
+                var(--bg);
+              font: 14px -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+              -webkit-font-smoothing: antialiased; }
+            main { width: min(100vw - 40px, \(design.settingsWidth)); margin: 0 auto; padding: 34px 0 64px; }
+            .hero { display: flex; align-items: center; gap: 16px; padding: 22px 24px; margin-bottom: 22px;
+              border: 1px solid var(--line); border-radius: 22px; box-shadow: var(--shadow);
+              background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--panel)), color-mix(in srgb, var(--panel) 86%, transparent));
+              backdrop-filter: blur(16px); }
+            .logo { width: 54px; height: 54px; border-radius: 16px; display: grid; place-items: center; flex: none;
+              background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 35%, #8a5cff));
+              color: #07121a; box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 40%, transparent); }
+            .logo svg { width: 30px; height: 30px; }
+            .hero h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+            .hero p { margin: 4px 0 0; color: var(--muted); font-size: 13px; word-break: break-all; }
+            .hero a { color: color-mix(in srgb, var(--accent) 78%, var(--text)); text-decoration: none; }
+            section { background: color-mix(in srgb, var(--panel) 80%, transparent); border: 1px solid var(--line);
+              border-radius: 20px; padding: 20px 22px; margin-bottom: 18px; box-shadow: var(--shadow); backdrop-filter: blur(12px); }
+            section > h2, .sec-head h2 { margin: 0 0 16px; font-size: 13px; font-weight: 800; letter-spacing: 0.08em;
+              text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+            section > h2::before, .sec-head h2::before { content: ""; width: 4px; height: 15px; border-radius: 3px;
+              background: linear-gradient(var(--accent), color-mix(in srgb, var(--accent) 40%, #8a5cff)); }
+            .sec-head h2 small, section h2 small { font-weight: 700; letter-spacing: 0; color: var(--text);
+              background: var(--panel-strong); border: 1px solid var(--line); border-radius: 999px; padding: 1px 9px; text-transform: none; }
+            .sec-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+            .sec-head h2 { margin: 0; }
+            .ghost { border: 1px solid var(--line); background: var(--panel-strong); color: var(--text);
+              border-radius: 999px; padding: 7px 15px; font: 600 12.5px inherit; cursor: pointer; transition: border-color 0.16s, transform 0.1s; }
+            .ghost:hover { border-color: var(--accent); }
+            .ghost:active { transform: scale(0.96); }
+            .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 12px; }
+            .stat { background: var(--panel-strong); border: 1px solid var(--line); border-radius: 15px; padding: 15px 12px; text-align: center;
+              transition: transform 0.14s, border-color 0.14s; }
+            .stat:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+            .stat strong { display: block; font-size: 25px; font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
             .stat span { color: var(--muted); font-size: 12px; }
-            .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 12px; }
-            .swatch { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 1px solid var(--line);
-              border-radius: 12px; overflow: hidden; background: var(--panel-strong); cursor: pointer; color: inherit; text-align: left; font: inherit; }
-            .swatch:hover { border-color: var(--accent); }
-            .chip { display: block; height: 64px; }
-            .swatch .hex { padding: 0 10px; font-variant: small-caps; text-transform: uppercase; font-weight: 700; letter-spacing: 0.04em; }
-            .swatch .cnt { padding: 0 10px 9px; color: var(--muted); font-size: 12px; }
-            ul.fonts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
-            ul.fonts li { display: flex; justify-content: space-between; align-items: center; gap: 12px;
-              padding: 11px 14px; background: var(--panel-strong); border: 1px solid var(--line); border-radius: 11px; }
-            .fname { font-size: 17px; }
+            .swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); gap: 14px; }
+            .swatch { position: relative; aspect-ratio: 1 / 1; padding: 0; border: 0; border-radius: 16px; overflow: hidden;
+              cursor: pointer; color: #fff; text-align: left; font: inherit; box-shadow: var(--shadow);
+              transition: transform 0.14s, box-shadow 0.14s; }
+            .swatch:hover { transform: translateY(-3px) scale(1.02); box-shadow: 0 16px 34px rgba(0,0,0,0.32); }
+            .swatch::after { content: "Копировать"; position: absolute; inset: 0; display: grid; place-items: center;
+              font-weight: 800; font-size: 13px; letter-spacing: 0.04em; color: #fff; background: rgba(0,0,0,0.35);
+              opacity: 0; transition: opacity 0.16s; text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
+            .swatch:hover::after { opacity: 1; }
+            .swatch-fill { position: absolute; inset: 0; background: var(--c);
+              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.14); }
+            .swatch-meta { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center;
+              justify-content: space-between; gap: 6px; padding: 22px 12px 11px;
+              background: linear-gradient(transparent, rgba(0,0,0,0.62)); }
+            .swatch .hex { font-weight: 800; letter-spacing: 0.03em; font-size: 13px; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+            .swatch .cnt { font-size: 11px; opacity: 0.85; text-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+            .fonts { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+            .fontcard { border: 1px solid var(--line); border-radius: 15px; overflow: hidden; background: var(--panel-strong);
+              transition: border-color 0.14s; }
+            .fontcard:hover { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+            .font-sample { padding: 18px 16px 14px; font-size: 27px; line-height: 1.1; }
+            .font-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+              padding: 9px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 70%, transparent); }
+            .fname { font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
             .cnt { color: var(--muted); font-size: 12px; flex: none; }
-            .sizes { display: flex; flex-wrap: wrap; gap: 8px; }
-            .size-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 11px; border-radius: 999px;
-              background: var(--panel-strong); border: 1px solid var(--line); font-weight: 600; }
+            .sizes { display: flex; flex-wrap: wrap; gap: 9px; }
+            .size-chip { display: inline-flex; align-items: baseline; gap: 6px; padding: 8px 13px; border-radius: 999px;
+              background: var(--panel-strong); border: 1px solid var(--line); font-weight: 700; font-variant-numeric: tabular-nums; }
             .size-chip small { color: var(--muted); font-weight: 500; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
-            .imgcard { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 12px;
-              overflow: hidden; background: var(--panel-strong); text-decoration: none; color: inherit; }
-            .imgcard:hover { border-color: var(--accent); }
-            .thumb { height: 110px; display: grid; place-items: center; background:
-              repeating-conic-gradient(color-mix(in srgb, var(--muted) 18%, transparent) 0% 25%, transparent 0% 50%) 0 / 18px 18px; overflow: hidden; }
-            .thumb img { max-width: 100%; max-height: 110px; object-fit: contain; }
-            .imeta { padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; }
-            .iname { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-            .idim { font-size: 11px; color: var(--muted); }
-            .mrow { display: flex; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--line); }
+            .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(158px, 1fr)); gap: 14px; }
+            .imgcard { margin: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 15px;
+              overflow: hidden; background: var(--panel-strong); transition: transform 0.14s, border-color 0.14s; }
+            .imgcard:hover { transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+            .thumb { height: 120px; display: grid; place-items: center; overflow: hidden; text-decoration: none;
+              background:
+                linear-gradient(45deg, color-mix(in srgb, var(--muted) 16%, transparent) 25%, transparent 25% 75%, color-mix(in srgb, var(--muted) 16%, transparent) 75%) 0 0 / 18px 18px,
+                linear-gradient(45deg, color-mix(in srgb, var(--muted) 16%, transparent) 25%, transparent 25% 75%, color-mix(in srgb, var(--muted) 16%, transparent) 75%) 9px 9px / 18px 18px; }
+            .thumb img { max-width: 100%; max-height: 120px; object-fit: contain; transition: transform 0.18s; }
+            .imgcard:hover .thumb img { transform: scale(1.05); }
+            figcaption { padding: 9px 11px; display: flex; flex-direction: column; gap: 6px; }
+            .iname { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            .irow { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+            .idim { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+            .dl { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 9px; cursor: pointer;
+              border: 1px solid var(--line); background: var(--panel); color: var(--text); transition: background 0.14s, border-color 0.14s, transform 0.1s; }
+            .dl svg { width: 16px; height: 16px; }
+            .dl:hover { background: var(--accent); border-color: var(--accent); color: #07121a; }
+            .dl:active { transform: scale(0.9); }
+            .mrow { display: flex; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--line); }
             .mrow:last-child { border-bottom: 0; }
             .mrow span { color: var(--muted); min-width: 110px; flex: none; }
-            .mrow code { word-break: break-all; }
+            .mrow code { word-break: break-all; font-size: 12.5px; }
             .empty { color: var(--muted); margin: 0; }
-            .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%) translateY(20px);
-              background: var(--accent); color: #07121a; font-weight: 700; padding: 9px 16px; border-radius: 999px;
-              opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none; }
+            .toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(20px);
+              background: var(--accent); color: #07121a; font-weight: 700; padding: 10px 18px; border-radius: 999px;
+              box-shadow: 0 12px 30px color-mix(in srgb, var(--accent) 45%, transparent);
+              opacity: 0; transition: opacity 0.2s, transform 0.2s; pointer-events: none; z-index: 9; }
             .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+            @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
           </style>
         </head>
         <body>
           <main>
-            <header>
+            <header class="hero">
               <span class="logo">\(brandMarkSVG)</span>
               <div>
                 <h1>\(cssScraperTitle) · \(title.htmlEscaped)</h1>
@@ -7875,9 +7960,9 @@ private enum CssScraperPage {
             </header>
             <section><h2>Сводка</h2><div class="stats">\(stats)</div></section>
             <section><h2>Цвета</h2><div class="swatches">\(colorSwatches)</div></section>
-            <section><h2>Шрифты</h2><ul class="fonts">\(fontRows)</ul></section>
+            <section><h2>Шрифты</h2><div class="fonts">\(fontCards)</div></section>
             <section><h2>Размеры шрифта</h2><div class="sizes">\(sizeChips)</div></section>
-            <section><h2>Медиафайлы</h2><div class="grid">\(imageCards)</div></section>
+            <section>\(mediaHead)<div class="grid">\(imageCards)</div></section>
             \(metaRows.isEmpty ? "" : "<section><h2>Мета</h2>\(metaRows)</section>")
           </main>
           <div class="toast" id="toast">Скопировано</div>
@@ -7886,7 +7971,7 @@ private enum CssScraperPage {
             const flash = (text) => {
               toast.textContent = text;
               toast.classList.add("show");
-              setTimeout(() => toast.classList.remove("show"), 1100);
+              setTimeout(() => toast.classList.remove("show"), 1300);
             };
             document.querySelectorAll(".swatch").forEach((btn) => {
               btn.addEventListener("click", () => {
@@ -7900,6 +7985,30 @@ private enum CssScraperPage {
                 flash(value + " скопирован");
               });
             });
+            const triggerDownload = (src) => {
+              const frame = document.createElement("iframe");
+              frame.style.display = "none";
+              frame.src = "northstar-download://image?url=" + encodeURIComponent(src);
+              document.body.appendChild(frame);
+              setTimeout(() => frame.remove(), 2000);
+            };
+            document.querySelectorAll(".dl").forEach((btn) => {
+              btn.addEventListener("click", (event) => {
+                event.preventDefault();
+                triggerDownload(btn.getAttribute("data-src"));
+                flash("Загрузка началась");
+              });
+            });
+            const dlAll = document.getElementById("dlAll");
+            if (dlAll) {
+              dlAll.addEventListener("click", () => {
+                const buttons = Array.from(document.querySelectorAll(".dl"));
+                buttons.forEach((btn, index) => {
+                  setTimeout(() => triggerDownload(btn.getAttribute("data-src")), index * 250);
+                });
+                flash("Загрузка " + buttons.length + " файлов");
+              });
+            }
           </script>
         </body>
         </html>
