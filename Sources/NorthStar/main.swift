@@ -3,8 +3,8 @@ import Network
 import WebKit
 
 private let appName = "NorthStar"
-private let homeURL = URL(string: "https://duckduckgo.com")!
 private let blankURL = URL(string: "about:blank")!
+private let northStarSearchScheme = "northstar-search"
 
 @main
 private enum NorthStarApplication {
@@ -18,6 +18,7 @@ private enum NorthStarApplication {
         app.delegate = delegate
         app.setActivationPolicy(.regular)
         app.mainMenu = makeMainMenu(appDelegate: delegate)
+        AppPreferences.shared.theme.apply()
         app.activate(ignoringOtherApps: true)
         app.run()
     }
@@ -64,8 +65,8 @@ private final class BrowserWindowController: NSWindowController, NSWindowDelegat
         let viewController = BrowserViewController()
         let window = NSWindow(contentViewController: viewController)
         window.title = appName
-        window.setContentSize(NSSize(width: 1280, height: 800))
-        window.minSize = NSSize(width: 860, height: 520)
+        window.setContentSize(NSSize(width: 1360, height: 840))
+        window.minSize = NSSize(width: 920, height: 560)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.center()
 
@@ -84,24 +85,32 @@ private final class BrowserWindowController: NSWindowController, NSWindowDelegat
 
 @MainActor
 private final class BrowserViewController: NSViewController {
-    private let sidebarView = NSVisualEffectView()
-    private let sidebarTitle = NSTextField(labelWithString: appName)
+    private let preferences = AppPreferences.shared
+
+    private let tabBarView = NSVisualEffectView()
+    private let tabBarHeaderView = NSView()
+    private let tabBarTitle = NSTextField(labelWithString: "Tabs")
     private let newTabButton = IconButton(symbolName: "plus", tooltip: "New Tab", width: 30, height: 28)
     private let tabScrollView = NSScrollView()
     private let tabStack = NSStackView()
 
     private let browserContentView = NSView()
     private let toolbarView = NSVisualEffectView()
+    private let brandTitleField = NSTextField(labelWithString: appName)
     private let webContainerView = NSView()
 
     private let backButton = IconButton(symbolName: "chevron.left", tooltip: "Back")
     private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Forward")
     private let homeButton = IconButton(symbolName: "house", tooltip: "Home")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Reload")
+    private let settingsButton = IconButton(symbolName: "gearshape", tooltip: "Settings")
     private let addressField = NSTextField()
     private let networkPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let progressIndicator = NSProgressIndicator()
 
+    private var placementConstraints: [NSLayoutConstraint] = []
+    private var tabBarContentConstraints: [NSLayoutConstraint] = []
+    private var tabStackCrossAxisConstraint: NSLayoutConstraint?
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
 
@@ -109,23 +118,28 @@ private final class BrowserViewController: NSViewController {
         tabs.first { $0.id == activeTabID }
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
     }
 
     override func viewDidLoad() {
         super.viewDidLoad()
 
         configureLayout()
-        configureSidebar()
+        configureTabBar()
         configureToolbar()
-        addTab(profile: .system, url: homeURL, activate: true)
+        observePreferences()
+        applyPreferences(redrawHomeTabs: false)
+        addTab(profile: .system, url: nil, activate: true)
     }
 
     @objc func newTabCommand(_ sender: Any?) {
-        addTab(profile: activeTab?.profile ?? .system, url: activeTab?.profile.startURL ?? homeURL, activate: true)
+        addTab(profile: activeTab?.profile ?? .system, url: nil, activate: true)
     }
 
     @objc func closeTabCommand(_ sender: Any?) {
@@ -158,6 +172,8 @@ private final class BrowserViewController: NSViewController {
 
         if tab.webView.isLoading {
             tab.webView.stopLoading()
+        } else if tab.isShowingHome {
+            showHome(in: tab)
         } else {
             tab.webView.reload()
         }
@@ -168,15 +184,26 @@ private final class BrowserViewController: NSViewController {
         addressField.currentEditor()?.selectAll(nil)
     }
 
+    @objc func showSettingsCommand(_ sender: Any?) {
+        let controller = SettingsViewController(preferences: preferences)
+        presentAsSheet(controller)
+    }
+
     @objc private func goHome(_ sender: Any?) {
         guard let tab = activeTab else { return }
-        load(tab.profile.startURL, in: tab)
+        showHome(in: tab)
     }
 
     @objc private func loadTypedAddress(_ sender: Any?) {
         guard let tab = activeTab else { return }
 
-        guard let url = URLParser.url(from: addressField.stringValue) else {
+        let trimmed = addressField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            showHome(in: tab)
+            return
+        }
+
+        guard let url = URLParser.url(from: trimmed, searchEngine: preferences.searchEngine) else {
             NSSound.beep()
             return
         }
@@ -198,71 +225,49 @@ private final class BrowserViewController: NSViewController {
         replace(tab: tab, with: NetworkProfile.allCases[index])
     }
 
-    private func configureLayout() {
-        sidebarView.translatesAutoresizingMaskIntoConstraints = false
-        sidebarView.material = .sidebar
-        sidebarView.blendingMode = .withinWindow
-        sidebarView.state = .active
-
-        browserContentView.translatesAutoresizingMaskIntoConstraints = false
-
-        view.addSubview(sidebarView)
-        view.addSubview(browserContentView)
-
-        NSLayoutConstraint.activate([
-            sidebarView.topAnchor.constraint(equalTo: view.topAnchor),
-            sidebarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            sidebarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-            sidebarView.widthAnchor.constraint(equalToConstant: 228),
-
-            browserContentView.topAnchor.constraint(equalTo: view.topAnchor),
-            browserContentView.leadingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            browserContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            browserContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
+    @objc private func preferencesChanged(_ notification: Notification) {
+        applyPreferences(redrawHomeTabs: true)
     }
 
-    private func configureSidebar() {
-        sidebarTitle.translatesAutoresizingMaskIntoConstraints = false
-        sidebarTitle.font = .systemFont(ofSize: 15, weight: .semibold)
-        sidebarTitle.lineBreakMode = .byTruncatingTail
+    private func configureLayout() {
+        tabBarView.translatesAutoresizingMaskIntoConstraints = false
+        tabBarView.material = .sidebar
+        tabBarView.blendingMode = .withinWindow
+        tabBarView.state = .active
+
+        browserContentView.translatesAutoresizingMaskIntoConstraints = false
+        browserContentView.wantsLayer = true
+
+        view.addSubview(tabBarView)
+        view.addSubview(browserContentView)
+    }
+
+    private func configureTabBar() {
+        tabBarHeaderView.translatesAutoresizingMaskIntoConstraints = false
+
+        tabBarTitle.translatesAutoresizingMaskIntoConstraints = false
+        tabBarTitle.font = .systemFont(ofSize: 13, weight: .semibold)
+        tabBarTitle.textColor = .secondaryLabelColor
+        tabBarTitle.lineBreakMode = .byTruncatingTail
 
         newTabButton.target = self
         newTabButton.action = #selector(addTabFromButton(_:))
 
         tabScrollView.translatesAutoresizingMaskIntoConstraints = false
         tabScrollView.drawsBackground = false
-        tabScrollView.hasVerticalScroller = true
         tabScrollView.autohidesScrollers = true
         tabScrollView.borderType = .noBorder
 
         tabStack.translatesAutoresizingMaskIntoConstraints = false
-        tabStack.orientation = .vertical
-        tabStack.alignment = .width
-        tabStack.spacing = 6
-        tabStack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 12, right: 10)
+        tabStack.spacing = 10
+        tabStack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 10, right: 10)
 
         tabScrollView.documentView = tabStack
 
-        sidebarView.addSubview(sidebarTitle)
-        sidebarView.addSubview(newTabButton)
-        sidebarView.addSubview(tabScrollView)
-
-        NSLayoutConstraint.activate([
-            sidebarTitle.topAnchor.constraint(equalTo: sidebarView.topAnchor, constant: 16),
-            sidebarTitle.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor, constant: 14),
-            sidebarTitle.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.leadingAnchor, constant: -10),
-
-            newTabButton.centerYAnchor.constraint(equalTo: sidebarTitle.centerYAnchor),
-            newTabButton.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor, constant: -12),
-
-            tabScrollView.topAnchor.constraint(equalTo: sidebarTitle.bottomAnchor, constant: 12),
-            tabScrollView.leadingAnchor.constraint(equalTo: sidebarView.leadingAnchor),
-            tabScrollView.trailingAnchor.constraint(equalTo: sidebarView.trailingAnchor),
-            tabScrollView.bottomAnchor.constraint(equalTo: sidebarView.bottomAnchor),
-
-            tabStack.widthAnchor.constraint(equalTo: tabScrollView.contentView.widthAnchor)
-        ])
+        tabBarView.addSubview(tabBarHeaderView)
+        tabBarView.addSubview(tabScrollView)
+        tabBarHeaderView.addSubview(tabBarTitle)
+        tabBarHeaderView.addSubview(newTabButton)
     }
 
     private func configureToolbar() {
@@ -271,9 +276,13 @@ private final class BrowserViewController: NSViewController {
         toolbarView.blendingMode = .withinWindow
         toolbarView.state = .active
 
+        brandTitleField.translatesAutoresizingMaskIntoConstraints = false
+        brandTitleField.font = .systemFont(ofSize: 18, weight: .bold)
+        brandTitleField.lineBreakMode = .byTruncatingTail
+        brandTitleField.setContentCompressionResistancePriority(.required, for: .horizontal)
+
         webContainerView.translatesAutoresizingMaskIntoConstraints = false
         webContainerView.wantsLayer = true
-        webContainerView.layer?.backgroundColor = NSColor.textBackgroundColor.cgColor
 
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.bezelStyle = .roundedBezel
@@ -309,11 +318,13 @@ private final class BrowserViewController: NSViewController {
         homeButton.action = #selector(goHome(_:))
         reloadButton.target = self
         reloadButton.action = #selector(reloadCommand(_:))
+        settingsButton.target = self
+        settingsButton.action = #selector(showSettingsCommand(_:))
 
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [backButton, forwardButton, homeButton, addressField, networkPopup, reloadButton, progressIndicator].forEach {
+        [brandTitleField, backButton, forwardButton, homeButton, addressField, networkPopup, reloadButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -321,14 +332,18 @@ private final class BrowserViewController: NSViewController {
             toolbarView.topAnchor.constraint(equalTo: browserContentView.topAnchor),
             toolbarView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
             toolbarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
-            toolbarView.heightAnchor.constraint(equalToConstant: 52),
+            toolbarView.heightAnchor.constraint(equalToConstant: 56),
 
             webContainerView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
             webContainerView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
             webContainerView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
             webContainerView.bottomAnchor.constraint(equalTo: browserContentView.bottomAnchor),
 
-            backButton.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor, constant: 12),
+            brandTitleField.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor, constant: 16),
+            brandTitleField.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
+            brandTitleField.widthAnchor.constraint(greaterThanOrEqualToConstant: 94),
+
+            backButton.leadingAnchor.constraint(equalTo: brandTitleField.trailingAnchor, constant: 16),
             backButton.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
 
             forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 8),
@@ -337,7 +352,10 @@ private final class BrowserViewController: NSViewController {
             homeButton.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 8),
             homeButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            reloadButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
+            settingsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
+            settingsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            reloadButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
             reloadButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
             networkPopup.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -10),
@@ -356,6 +374,156 @@ private final class BrowserViewController: NSViewController {
         ])
     }
 
+    private func observePreferences() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(preferencesChanged(_:)),
+            name: AppPreferences.didChangeNotification,
+            object: preferences
+        )
+    }
+
+    private func applyPreferences(redrawHomeTabs: Bool) {
+        preferences.theme.apply()
+        applyChromeTheme()
+        applyTabPlacement(preferences.tabPlacement)
+
+        if redrawHomeTabs {
+            tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
+        }
+
+        renderTabs()
+        syncToolbar()
+    }
+
+    private func applyChromeTheme() {
+        let colors = ChromePalette(theme: preferences.theme)
+        view.layer?.backgroundColor = colors.window.cgColor
+        browserContentView.layer?.backgroundColor = colors.window.cgColor
+        webContainerView.layer?.backgroundColor = colors.webBackground.cgColor
+        brandTitleField.textColor = colors.brand
+        tabBarTitle.textColor = colors.secondaryText
+    }
+
+    private func applyTabPlacement(_ placement: TabPlacement) {
+        NSLayoutConstraint.deactivate(placementConstraints)
+
+        switch placement {
+        case .left:
+            placementConstraints = [
+                tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
+                tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                tabBarView.widthAnchor.constraint(equalToConstant: 276),
+
+                browserContentView.topAnchor.constraint(equalTo: view.topAnchor),
+                browserContentView.leadingAnchor.constraint(equalTo: tabBarView.trailingAnchor),
+                browserContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                browserContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ]
+        case .right:
+            placementConstraints = [
+                browserContentView.topAnchor.constraint(equalTo: view.topAnchor),
+                browserContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                browserContentView.trailingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
+                browserContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+                tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
+                tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                tabBarView.widthAnchor.constraint(equalToConstant: 276)
+            ]
+        case .top:
+            placementConstraints = [
+                tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
+                tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                tabBarView.heightAnchor.constraint(equalToConstant: 96),
+
+                browserContentView.topAnchor.constraint(equalTo: tabBarView.bottomAnchor),
+                browserContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                browserContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                browserContentView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+            ]
+        case .bottom:
+            placementConstraints = [
+                browserContentView.topAnchor.constraint(equalTo: view.topAnchor),
+                browserContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                browserContentView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                browserContentView.bottomAnchor.constraint(equalTo: tabBarView.topAnchor),
+
+                tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                tabBarView.heightAnchor.constraint(equalToConstant: 96)
+            ]
+        }
+
+        NSLayoutConstraint.activate(placementConstraints)
+        applyTabBarContentLayout(placement)
+    }
+
+    private func applyTabBarContentLayout(_ placement: TabPlacement) {
+        NSLayoutConstraint.deactivate(tabBarContentConstraints)
+        tabStackCrossAxisConstraint?.isActive = false
+
+        let isHorizontal = placement.isHorizontal
+        tabBarTitle.isHidden = false
+        tabBarTitle.stringValue = placement == .top ? appName : "Tabs"
+        tabStack.orientation = isHorizontal ? .horizontal : .vertical
+        tabStack.alignment = isHorizontal ? .height : .width
+        tabStack.edgeInsets = isHorizontal
+            ? NSEdgeInsets(top: 14, left: 10, bottom: 14, right: 14)
+            : NSEdgeInsets(top: 10, left: 12, bottom: 14, right: 12)
+        tabScrollView.hasHorizontalScroller = isHorizontal
+        tabScrollView.hasVerticalScroller = !isHorizontal
+
+        if isHorizontal {
+            tabBarContentConstraints = [
+                tabBarHeaderView.topAnchor.constraint(equalTo: tabBarView.topAnchor),
+                tabBarHeaderView.leadingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
+                tabBarHeaderView.bottomAnchor.constraint(equalTo: tabBarView.bottomAnchor),
+                tabBarHeaderView.widthAnchor.constraint(equalToConstant: 176),
+
+                tabBarTitle.leadingAnchor.constraint(equalTo: tabBarHeaderView.leadingAnchor, constant: 16),
+                tabBarTitle.centerYAnchor.constraint(equalTo: tabBarHeaderView.centerYAnchor),
+                tabBarTitle.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.leadingAnchor, constant: -10),
+
+                newTabButton.centerYAnchor.constraint(equalTo: tabBarHeaderView.centerYAnchor),
+                newTabButton.trailingAnchor.constraint(equalTo: tabBarHeaderView.trailingAnchor, constant: -12),
+
+                tabScrollView.topAnchor.constraint(equalTo: tabBarView.topAnchor),
+                tabScrollView.leadingAnchor.constraint(equalTo: tabBarHeaderView.trailingAnchor),
+                tabScrollView.trailingAnchor.constraint(equalTo: tabBarView.trailingAnchor),
+                tabScrollView.bottomAnchor.constraint(equalTo: tabBarView.bottomAnchor)
+            ]
+            tabStackCrossAxisConstraint = tabStack.heightAnchor.constraint(equalTo: tabScrollView.contentView.heightAnchor)
+        } else {
+            tabBarContentConstraints = [
+                tabBarHeaderView.topAnchor.constraint(equalTo: tabBarView.topAnchor),
+                tabBarHeaderView.leadingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
+                tabBarHeaderView.trailingAnchor.constraint(equalTo: tabBarView.trailingAnchor),
+                tabBarHeaderView.heightAnchor.constraint(equalToConstant: 48),
+
+                tabBarTitle.leadingAnchor.constraint(equalTo: tabBarHeaderView.leadingAnchor, constant: 14),
+                tabBarTitle.centerYAnchor.constraint(equalTo: tabBarHeaderView.centerYAnchor),
+                tabBarTitle.trailingAnchor.constraint(lessThanOrEqualTo: newTabButton.leadingAnchor, constant: -10),
+
+                newTabButton.centerYAnchor.constraint(equalTo: tabBarHeaderView.centerYAnchor),
+                newTabButton.trailingAnchor.constraint(equalTo: tabBarHeaderView.trailingAnchor, constant: -12),
+
+                tabScrollView.topAnchor.constraint(equalTo: tabBarHeaderView.bottomAnchor),
+                tabScrollView.leadingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
+                tabScrollView.trailingAnchor.constraint(equalTo: tabBarView.trailingAnchor),
+                tabScrollView.bottomAnchor.constraint(equalTo: tabBarView.bottomAnchor)
+            ]
+            tabStackCrossAxisConstraint = tabStack.widthAnchor.constraint(equalTo: tabScrollView.contentView.widthAnchor)
+        }
+
+        NSLayoutConstraint.activate(tabBarContentConstraints)
+        tabStackCrossAxisConstraint?.isActive = true
+    }
+
     private func addTab(profile: NetworkProfile, url: URL?, activate: Bool) {
         let tab = makeTab(profile: profile)
         tabs.append(tab)
@@ -370,6 +538,8 @@ private final class BrowserViewController: NSViewController {
 
         if let url {
             load(url, in: tab)
+        } else {
+            showHome(in: tab)
         }
     }
 
@@ -391,7 +561,7 @@ private final class BrowserViewController: NSViewController {
             return
         }
 
-        let targetURL = targetURLAfterChangingNetwork(from: oldTab, to: profile)
+        let targetURL = oldTab.isShowingHome ? nil : oldTab.url ?? oldTab.webView.url
         let newTab = makeTab(profile: profile)
 
         oldTab.close()
@@ -405,16 +575,12 @@ private final class BrowserViewController: NSViewController {
 
         renderTabs()
         syncToolbar()
-        load(targetURL, in: newTab)
-    }
 
-    private func targetURLAfterChangingNetwork(from tab: BrowserTab, to profile: NetworkProfile) -> URL {
-        let currentURL = tab.url ?? tab.webView.url
-        if let currentURL, NetworkPolicy.allows(currentURL, profile: profile) {
-            return currentURL
+        if let targetURL, NetworkPolicy.allows(targetURL, profile: profile) {
+            load(targetURL, in: newTab)
+        } else {
+            showHome(in: newTab)
         }
-
-        return profile.startURL
     }
 
     private func closeTab(id: UUID) {
@@ -481,12 +647,15 @@ private final class BrowserViewController: NSViewController {
             $0.removeFromSuperview()
         }
 
+        let isHorizontal = preferences.tabPlacement.isHorizontal
+
         for tab in tabs {
             let row = TabRowView()
             row.configure(
                 title: tab.displayTitle,
                 detail: tab.profile.detail,
-                isActive: tab.id == activeTabID
+                isActive: tab.id == activeTabID,
+                isHorizontal: isHorizontal
             )
             row.onSelect = { [weak self, id = tab.id] in
                 self?.activateTab(id: id)
@@ -494,6 +663,11 @@ private final class BrowserViewController: NSViewController {
             row.onClose = { [weak self, id = tab.id] in
                 self?.closeTab(id: id)
             }
+
+            if isHorizontal {
+                row.widthAnchor.constraint(equalToConstant: 238).isActive = true
+            }
+
             tabStack.addArrangedSubview(row)
         }
     }
@@ -506,6 +680,10 @@ private final class BrowserViewController: NSViewController {
         renderTabs()
     }
 
+    private func showHome(in tab: BrowserTab) {
+        tab.loadHomePage(searchEngine: preferences.searchEngine, theme: preferences.theme)
+    }
+
     private func load(_ url: URL, in tab: BrowserTab) {
         guard NetworkPolicy.allows(url, profile: tab.profile) else {
             showBlockedURL(url, profile: tab.profile)
@@ -514,6 +692,17 @@ private final class BrowserViewController: NSViewController {
         }
 
         tab.load(url)
+    }
+
+    private func handleInternalSearchURL(_ url: URL, in tab: BrowserTab) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let query = components.queryItems?.first(where: { $0.name == "q" })?.value,
+              let targetURL = URLParser.url(from: query, searchEngine: preferences.searchEngine) else {
+            showHome(in: tab)
+            return
+        }
+
+        load(targetURL, in: tab)
     }
 
     private func syncToolbar() {
@@ -535,17 +724,17 @@ private final class BrowserViewController: NSViewController {
         reloadButton.toolTip = tab.webView.isLoading ? "Stop" : "Reload"
 
         if !isEditingAddress {
-            addressField.stringValue = tab.url?.absoluteString ?? tab.webView.url?.absoluteString ?? ""
+            addressField.stringValue = tab.isShowingHome ? "" : tab.url?.absoluteString ?? tab.webView.url?.absoluteString ?? ""
         }
 
         progressIndicator.doubleValue = tab.progress
-        progressIndicator.isHidden = !tab.webView.isLoading || tab.progress >= 1
+        progressIndicator.isHidden = tab.isShowingHome || !tab.webView.isLoading || tab.progress >= 1
 
         if let profileIndex = NetworkProfile.allCases.firstIndex(of: tab.profile) {
             networkPopup.selectItem(at: profileIndex)
         }
 
-        view.window?.title = tab.displayTitle == "New Tab" ? appName : "\(tab.displayTitle) - \(appName)"
+        view.window?.title = appName
     }
 
     private var isEditingAddress: Bool {
@@ -613,6 +802,14 @@ extension BrowserViewController: WKNavigationDelegate {
             return
         }
 
+        if url.scheme?.lowercased() == northStarSearchScheme {
+            if let tab = tab(for: webView) {
+                handleInternalSearchURL(url, in: tab)
+            }
+            decisionHandler(.cancel)
+            return
+        }
+
         let internalSchemes: Set<String> = ["http", "https", "file", "about", "data", "blob"]
         let scheme = url.scheme?.lowercased()
 
@@ -652,12 +849,17 @@ private final class BrowserTab {
     let webView: WKWebView
     var onStateChange: ((BrowserTab) -> Void)?
 
-    private(set) var title = "New Tab"
+    private(set) var title = appName
     private(set) var url: URL?
-    private(set) var progress = 0.0
+    private(set) var progress = 1.0
+    private(set) var isShowingHome = true
     private var observations: [NSKeyValueObservation] = []
 
     var displayTitle: String {
+        if isShowingHome {
+            return appName
+        }
+
         if !title.isEmpty {
             return title
         }
@@ -678,8 +880,20 @@ private final class BrowserTab {
         bindWebViewState()
     }
 
+    func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode) {
+        isShowingHome = true
+        title = appName
+        url = nil
+        progress = 1
+        notifyChanged()
+        webView.loadHTMLString(HomePage.html(searchEngine: searchEngine, theme: theme), baseURL: nil)
+    }
+
     func load(_ url: URL) {
+        isShowingHome = false
         self.url = url
+        title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Loading"
+        progress = 0
         notifyChanged()
         webView.load(URLRequest(url: url))
     }
@@ -692,9 +906,15 @@ private final class BrowserTab {
     }
 
     func syncFromWebView() {
-        url = webView.url ?? url
-        title = Self.normalizedTitle(webView.title)
-        progress = webView.estimatedProgress
+        if isShowingHome {
+            title = appName
+            progress = webView.isLoading ? webView.estimatedProgress : 1
+        } else {
+            url = webView.url ?? url
+            title = Self.normalizedTitle(webView.title) ?? Self.normalizedTitle(url?.host(percentEncoded: false)) ?? "New Tab"
+            progress = webView.estimatedProgress
+        }
+
         notifyChanged()
     }
 
@@ -708,14 +928,18 @@ private final class BrowserTab {
             },
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 DispatchQueue.main.async {
-                    self?.url = webView.url
-                    self?.notifyChanged()
+                    guard let self else { return }
+                    if !self.isShowingHome {
+                        self.url = webView.url
+                    }
+                    self.notifyChanged()
                 }
             },
             webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
                 DispatchQueue.main.async {
-                    self?.title = Self.normalizedTitle(webView.title)
-                    self?.notifyChanged()
+                    guard let self else { return }
+                    self.title = self.isShowingHome ? appName : Self.normalizedTitle(webView.title) ?? self.title
+                    self.notifyChanged()
                 }
             },
             webView.observe(\.canGoBack, options: [.initial, .new]) { [weak self] _, _ in
@@ -740,9 +964,288 @@ private final class BrowserTab {
         onStateChange?(self)
     }
 
-    private static func normalizedTitle(_ title: String?) -> String {
+    private static func normalizedTitle(_ title: String?) -> String? {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? "New Tab" : trimmed
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+@MainActor
+private final class SettingsViewController: NSViewController {
+    private let preferences: AppPreferences
+    private let searchPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let tabPlacementPopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let themePopup = NSPopUpButton(frame: .zero, pullsDown: false)
+    private let doneButton = NSButton(title: "Done", target: nil, action: nil)
+
+    init(preferences: AppPreferences) {
+        self.preferences = preferences
+        super.init(nibName: nil, bundle: nil)
+        preferredContentSize = NSSize(width: 440, height: 254)
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func loadView() {
+        view = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        let title = NSTextField(labelWithString: "Settings")
+        title.translatesAutoresizingMaskIntoConstraints = false
+        title.font = .systemFont(ofSize: 22, weight: .bold)
+
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.spacing = 14
+
+        configurePopup(searchPopup, titles: SearchEngine.allCases.map(\.title), selectedIndex: preferences.searchEngine.rawValue, action: #selector(searchChanged(_:)))
+        configurePopup(tabPlacementPopup, titles: TabPlacement.allCases.map(\.title), selectedIndex: preferences.tabPlacement.rawValue, action: #selector(tabPlacementChanged(_:)))
+        configurePopup(themePopup, titles: ThemeMode.allCases.map(\.title), selectedIndex: preferences.theme.rawValue, action: #selector(themeChanged(_:)))
+
+        stack.addArrangedSubview(settingsRow(label: "Search engine", control: searchPopup))
+        stack.addArrangedSubview(settingsRow(label: "Tabs position", control: tabPlacementPopup))
+        stack.addArrangedSubview(settingsRow(label: "Theme", control: themePopup))
+
+        doneButton.translatesAutoresizingMaskIntoConstraints = false
+        doneButton.bezelStyle = .rounded
+        doneButton.target = self
+        doneButton.action = #selector(done(_:))
+
+        view.addSubview(title)
+        view.addSubview(stack)
+        view.addSubview(doneButton)
+
+        NSLayoutConstraint.activate([
+            title.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
+            title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            title.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+
+            stack.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 22),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+
+            doneButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
+            doneButton.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -24),
+            doneButton.widthAnchor.constraint(equalToConstant: 88)
+        ])
+    }
+
+    private func configurePopup(_ popup: NSPopUpButton, titles: [String], selectedIndex: Int, action: Selector) {
+        popup.translatesAutoresizingMaskIntoConstraints = false
+        popup.removeAllItems()
+        popup.addItems(withTitles: titles)
+        popup.selectItem(at: selectedIndex)
+        popup.target = self
+        popup.action = action
+        popup.widthAnchor.constraint(equalToConstant: 190).isActive = true
+    }
+
+    private func settingsRow(label: String, control: NSView) -> NSView {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 18
+
+        let labelField = NSTextField(labelWithString: label)
+        labelField.translatesAutoresizingMaskIntoConstraints = false
+        labelField.font = .systemFont(ofSize: 13, weight: .medium)
+        labelField.widthAnchor.constraint(equalToConstant: 142).isActive = true
+
+        row.addArrangedSubview(labelField)
+        row.addArrangedSubview(control)
+        return row
+    }
+
+    @objc private func searchChanged(_ sender: Any?) {
+        preferences.searchEngine = SearchEngine(rawValue: searchPopup.indexOfSelectedItem) ?? .duckDuckGo
+    }
+
+    @objc private func tabPlacementChanged(_ sender: Any?) {
+        preferences.tabPlacement = TabPlacement(rawValue: tabPlacementPopup.indexOfSelectedItem) ?? .left
+    }
+
+    @objc private func themeChanged(_ sender: Any?) {
+        preferences.theme = ThemeMode(rawValue: themePopup.indexOfSelectedItem) ?? .system
+    }
+
+    @objc private func done(_ sender: Any?) {
+        guard let window = view.window else { return }
+        window.sheetParent?.endSheet(window)
+    }
+}
+
+private final class AppPreferences {
+    static let shared = AppPreferences()
+    static let didChangeNotification = Notification.Name("NorthStarPreferencesDidChange")
+
+    var searchEngine: SearchEngine {
+        didSet { saveAndNotify(key: Keys.searchEngine, value: searchEngine.rawValue) }
+    }
+
+    var tabPlacement: TabPlacement {
+        didSet { saveAndNotify(key: Keys.tabPlacement, value: tabPlacement.rawValue) }
+    }
+
+    var theme: ThemeMode {
+        didSet { saveAndNotify(key: Keys.theme, value: theme.rawValue) }
+    }
+
+    private enum Keys {
+        static let searchEngine = "searchEngine"
+        static let tabPlacement = "tabPlacement"
+        static let theme = "theme"
+    }
+
+    private let defaults = UserDefaults.standard
+
+    private init() {
+        searchEngine = SearchEngine(rawValue: defaults.integer(forKey: Keys.searchEngine)) ?? .duckDuckGo
+        tabPlacement = TabPlacement(rawValue: defaults.integer(forKey: Keys.tabPlacement)) ?? .left
+        theme = ThemeMode(rawValue: defaults.integer(forKey: Keys.theme)) ?? .system
+    }
+
+    private func saveAndNotify(key: String, value: Int) {
+        defaults.set(value, forKey: key)
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+}
+
+private enum TabPlacement: Int, CaseIterable {
+    case left
+    case top
+    case right
+    case bottom
+
+    var title: String {
+        switch self {
+        case .left:
+            return "Left"
+        case .top:
+            return "Top"
+        case .right:
+            return "Right"
+        case .bottom:
+            return "Bottom"
+        }
+    }
+
+    var isHorizontal: Bool {
+        self == .top || self == .bottom
+    }
+}
+
+private enum ThemeMode: Int, CaseIterable {
+    case system
+    case light
+    case dark
+
+    var title: String {
+        switch self {
+        case .system:
+            return "System"
+        case .light:
+            return "Light"
+        case .dark:
+            return "Dark"
+        }
+    }
+
+    @MainActor
+    func apply() {
+        switch self {
+        case .system:
+            NSApp.appearance = nil
+        case .light:
+            NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:
+            NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+}
+
+private enum SearchEngine: Int, CaseIterable {
+    case duckDuckGo
+    case google
+    case yandex
+    case brave
+    case bing
+    case ecosia
+    case startpage
+
+    var title: String {
+        switch self {
+        case .duckDuckGo:
+            return "DuckDuckGo"
+        case .google:
+            return "Google"
+        case .yandex:
+            return "Yandex"
+        case .brave:
+            return "Brave"
+        case .bing:
+            return "Bing"
+        case .ecosia:
+            return "Ecosia"
+        case .startpage:
+            return "Startpage"
+        }
+    }
+
+    func searchURL(for query: String) -> URL? {
+        let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+
+        switch self {
+        case .duckDuckGo:
+            return URL(string: "https://duckduckgo.com/?q=\(encoded)")
+        case .google:
+            return URL(string: "https://www.google.com/search?q=\(encoded)")
+        case .yandex:
+            return URL(string: "https://yandex.com/search/?text=\(encoded)")
+        case .brave:
+            return URL(string: "https://search.brave.com/search?q=\(encoded)")
+        case .bing:
+            return URL(string: "https://www.bing.com/search?q=\(encoded)")
+        case .ecosia:
+            return URL(string: "https://www.ecosia.org/search?q=\(encoded)")
+        case .startpage:
+            return URL(string: "https://www.startpage.com/sp/search?query=\(encoded)")
+        }
+    }
+}
+
+private struct ChromePalette {
+    let window: NSColor
+    let webBackground: NSColor
+    let brand: NSColor
+    let secondaryText: NSColor
+
+    init(theme: ThemeMode) {
+        switch theme {
+        case .light:
+            window = NSColor(red: 0.95, green: 0.97, blue: 0.98, alpha: 1)
+            webBackground = NSColor(red: 0.98, green: 0.99, blue: 1, alpha: 1)
+            brand = NSColor(red: 0.08, green: 0.13, blue: 0.18, alpha: 1)
+            secondaryText = NSColor(red: 0.36, green: 0.43, blue: 0.48, alpha: 1)
+        case .dark:
+            window = NSColor(red: 0.07, green: 0.08, blue: 0.09, alpha: 1)
+            webBackground = NSColor(red: 0.05, green: 0.06, blue: 0.07, alpha: 1)
+            brand = NSColor(red: 0.92, green: 0.98, blue: 1, alpha: 1)
+            secondaryText = NSColor(red: 0.66, green: 0.72, blue: 0.75, alpha: 1)
+        case .system:
+            window = .windowBackgroundColor
+            webBackground = .textBackgroundColor
+            brand = .labelColor
+            secondaryText = .secondaryLabelColor
+        }
     }
 }
 
@@ -770,20 +1273,11 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
         case .system:
             return "Default network"
         case .privateBrowsing:
-            return "No persistent data"
+            return "Private data"
         case .tor:
             return "127.0.0.1:9050"
         case .localhost:
             return "Local only"
-        }
-    }
-
-    var startURL: URL {
-        switch self {
-        case .localhost:
-            return blankURL
-        default:
-            return homeURL
         }
     }
 
@@ -840,20 +1334,27 @@ private final class TabRowView: NSView {
     var onSelect: (() -> Void)?
     var onClose: (() -> Void)?
 
+    private let indicatorView = NSView()
     private let titleField = NSTextField(labelWithString: "New Tab")
     private let detailField = NSTextField(labelWithString: "")
     private let closeButton = IconButton(symbolName: "xmark", tooltip: "Close Tab", width: 24, height: 22)
     private var isActive = false
+    private var heightConstraint: NSLayoutConstraint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
 
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 7
+        layer?.cornerRadius = 10
+        layer?.borderWidth = 1
+
+        indicatorView.translatesAutoresizingMaskIntoConstraints = false
+        indicatorView.wantsLayer = true
+        indicatorView.layer?.cornerRadius = 2
 
         titleField.translatesAutoresizingMaskIntoConstraints = false
-        titleField.font = .systemFont(ofSize: 13, weight: .medium)
+        titleField.font = .systemFont(ofSize: 13.5, weight: .semibold)
         titleField.lineBreakMode = .byTruncatingTail
 
         detailField.translatesAutoresizingMaskIntoConstraints = false
@@ -866,15 +1367,24 @@ private final class TabRowView: NSView {
         closeButton.target = self
         closeButton.action = #selector(closePressed(_:))
 
+        addSubview(indicatorView)
         addSubview(titleField)
         addSubview(detailField)
         addSubview(closeButton)
 
-        NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 48),
+        let height = heightAnchor.constraint(equalToConstant: 48)
+        heightConstraint = height
 
-            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 8),
-            titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+        NSLayoutConstraint.activate([
+            height,
+
+            indicatorView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
+            indicatorView.topAnchor.constraint(equalTo: topAnchor, constant: 11),
+            indicatorView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11),
+            indicatorView.widthAnchor.constraint(equalToConstant: 4),
+
+            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            titleField.leadingAnchor.constraint(equalTo: indicatorView.trailingAnchor, constant: 10),
             titleField.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
 
             detailField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 2),
@@ -892,10 +1402,11 @@ private final class TabRowView: NSView {
         nil
     }
 
-    func configure(title: String, detail: String, isActive: Bool) {
+    func configure(title: String, detail: String, isActive: Bool, isHorizontal: Bool) {
         titleField.stringValue = title
         detailField.stringValue = detail
         self.isActive = isActive
+        heightConstraint?.constant = isHorizontal ? 62 : 58
         updateStyle()
     }
 
@@ -908,9 +1419,17 @@ private final class TabRowView: NSView {
     }
 
     private func updateStyle() {
+        let accent = NSColor.controlAccentColor
         layer?.backgroundColor = isActive
-            ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).cgColor
-            : NSColor.clear.cgColor
+            ? accent.withAlphaComponent(0.18).cgColor
+            : NSColor.controlBackgroundColor.withAlphaComponent(0.42).cgColor
+        layer?.borderColor = isActive
+            ? accent.withAlphaComponent(0.55).cgColor
+            : NSColor.separatorColor.withAlphaComponent(0.28).cgColor
+        indicatorView.layer?.backgroundColor = isActive
+            ? accent.cgColor
+            : NSColor.separatorColor.withAlphaComponent(0.45).cgColor
+        detailField.textColor = isActive ? .labelColor : .secondaryLabelColor
     }
 }
 
@@ -937,9 +1456,9 @@ private final class IconButton: NSButton {
 }
 
 private enum URLParser {
-    static func url(from input: String) -> URL? {
+    static func url(from input: String, searchEngine: SearchEngine) -> URL? {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return homeURL }
+        guard !trimmed.isEmpty else { return nil }
 
         if let directURL = URL(string: trimmed),
            let scheme = directURL.scheme?.lowercased(),
@@ -951,8 +1470,7 @@ private enum URLParser {
             return URL(string: "\(defaultScheme(for: trimmed))://\(trimmed)")
         }
 
-        let query = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmed
-        return URL(string: "https://duckduckgo.com/?q=\(query)")
+        return searchEngine.searchURL(for: trimmed)
     }
 
     private static func looksLikeHost(_ text: String) -> Bool {
@@ -981,6 +1499,230 @@ private enum URLParser {
     }
 }
 
+private enum HomePage {
+    static func html(searchEngine: SearchEngine, theme: ThemeMode) -> String {
+        let palette = HomePalette(theme: theme)
+        let engine = searchEngine.title.htmlEscaped
+
+        return """
+        <!doctype html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>\(appName)</title>
+          <style>
+            :root {
+              color-scheme: \(palette.colorScheme);
+              --bg: \(palette.background);
+              --panel: \(palette.panel);
+              --panel-strong: \(palette.panelStrong);
+              --text: \(palette.text);
+              --muted: \(palette.muted);
+              --line: \(palette.line);
+              --accent: \(palette.accent);
+              --accent-2: \(palette.accentTwo);
+              --shadow: \(palette.shadow);
+            }
+            * { box-sizing: border-box; }
+            html, body { margin: 0; min-height: 100%; }
+            body {
+              min-height: 100vh;
+              font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+              color: var(--text);
+              background:
+                linear-gradient(120deg, var(--bg) 0%, var(--panel-strong) 54%, var(--bg) 100%);
+              display: grid;
+              place-items: center;
+              overflow: hidden;
+            }
+            main {
+              width: min(860px, calc(100vw - 48px));
+              display: grid;
+              gap: 28px;
+            }
+            .mast {
+              display: grid;
+              gap: 12px;
+              text-align: center;
+            }
+            h1 {
+              margin: 0;
+              font-size: clamp(54px, 9vw, 108px);
+              line-height: 0.94;
+              letter-spacing: 0;
+              font-weight: 800;
+            }
+            .line {
+              width: min(360px, 60vw);
+              height: 3px;
+              margin: 0 auto;
+              border-radius: 999px;
+              background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            }
+            .sub {
+              margin: 0;
+              color: var(--muted);
+              font-size: 17px;
+              line-height: 1.5;
+            }
+            .search {
+              display: grid;
+              grid-template-columns: 1fr auto;
+              gap: 10px;
+              padding: 12px;
+              background: var(--panel);
+              border: 1px solid var(--line);
+              border-radius: 18px;
+              box-shadow: 0 26px 70px var(--shadow);
+            }
+            input {
+              width: 100%;
+              min-width: 0;
+              border: 0;
+              outline: 0;
+              border-radius: 12px;
+              padding: 16px 18px;
+              font-size: 17px;
+              color: var(--text);
+              background: transparent;
+            }
+            input::placeholder { color: var(--muted); }
+            button {
+              border: 0;
+              border-radius: 12px;
+              padding: 0 22px;
+              min-width: 112px;
+              font-size: 15px;
+              font-weight: 700;
+              color: #071015;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
+              cursor: pointer;
+            }
+            .quick {
+              display: grid;
+              grid-template-columns: repeat(4, minmax(0, 1fr));
+              gap: 10px;
+            }
+            .quick a {
+              color: var(--text);
+              text-decoration: none;
+              padding: 14px 15px;
+              border: 1px solid var(--line);
+              border-radius: 14px;
+              background: color-mix(in srgb, var(--panel) 74%, transparent);
+              font-size: 14px;
+              font-weight: 650;
+              text-align: center;
+            }
+            .engine {
+              color: var(--muted);
+              font-size: 13px;
+              text-align: center;
+            }
+            @media (max-width: 680px) {
+              .search { grid-template-columns: 1fr; }
+              button { height: 46px; }
+              .quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+            }
+          </style>
+        </head>
+        <body>
+          <main>
+            <section class="mast" aria-label="NorthStar">
+              <h1>\(appName)</h1>
+              <div class="line"></div>
+              <p class="sub">Search, open a site, or start from a familiar place.</p>
+            </section>
+            <form class="search" id="searchForm">
+              <input id="query" name="q" autofocus autocomplete="off" placeholder="Search or enter website">
+              <button type="submit">Go</button>
+            </form>
+            <div class="engine">Search engine: \(engine)</div>
+            <nav class="quick" aria-label="Quick links">
+              <a href="https://github.com">GitHub</a>
+              <a href="https://news.ycombinator.com">Hacker News</a>
+              <a href="https://developer.apple.com">Apple Dev</a>
+              <a href="http://localhost:3000">Localhost</a>
+            </nav>
+          </main>
+          <script>
+            const form = document.getElementById("searchForm");
+            const query = document.getElementById("query");
+            form.addEventListener("submit", event => {
+              event.preventDefault();
+              const value = query.value.trim();
+              if (!value) return;
+              window.location.href = "\(northStarSearchScheme)://search?q=" + encodeURIComponent(value);
+            });
+          </script>
+        </body>
+        </html>
+        """
+    }
+}
+
+private struct HomePalette {
+    let colorScheme: String
+    let background: String
+    let panel: String
+    let panelStrong: String
+    let text: String
+    let muted: String
+    let line: String
+    let accent: String
+    let accentTwo: String
+    let shadow: String
+
+    init(theme: ThemeMode) {
+        switch theme {
+        case .light:
+            colorScheme = "light"
+            background = "#eff6f7"
+            panel = "rgba(255,255,255,0.78)"
+            panelStrong = "#dbe8e8"
+            text = "#11191f"
+            muted = "#52656c"
+            line = "rgba(39,65,72,0.18)"
+            accent = "#47d6b0"
+            accentTwo = "#7bb8ff"
+            shadow = "rgba(34,65,72,0.16)"
+        case .dark:
+            colorScheme = "dark"
+            background = "#071013"
+            panel = "rgba(17,27,31,0.82)"
+            panelStrong = "#17252a"
+            text = "#f4fbfc"
+            muted = "#9eb5ba"
+            line = "rgba(209,240,245,0.16)"
+            accent = "#6ee7c7"
+            accentTwo = "#8dc7ff"
+            shadow = "rgba(0,0,0,0.34)"
+        case .system:
+            colorScheme = "light dark"
+            background = "Canvas"
+            panel = "color-mix(in srgb, Canvas 78%, CanvasText 4%)"
+            panelStrong = "color-mix(in srgb, Canvas 84%, #47d6b0 10%)"
+            text = "CanvasText"
+            muted = "color-mix(in srgb, CanvasText 58%, transparent)"
+            line = "color-mix(in srgb, CanvasText 16%, transparent)"
+            accent = "#6ee7c7"
+            accentTwo = "#8dc7ff"
+            shadow = "rgba(0,0,0,0.18)"
+        }
+    }
+}
+
+private extension String {
+    var htmlEscaped: String {
+        replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+}
+
 @MainActor
 private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     let mainMenu = NSMenu()
@@ -988,6 +1730,7 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     let appMenuItem = NSMenuItem()
     let appMenu = NSMenu(title: appName)
     appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+    appMenu.addItem(withTitle: "Settings...", action: #selector(BrowserViewController.showSettingsCommand(_:)), keyEquivalent: ",")
     appMenu.addItem(.separator())
     appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appMenuItem.submenu = appMenu

@@ -13,17 +13,32 @@
 
 NorthStar is a small native macOS browser built with Swift, AppKit, and Apple's WebKit. It is meant to be fast to understand, easy to extend, and useful as a foundation for experimenting with browser UX, private sessions, proxy-backed browsing, and local development workflows.
 
-The first version keeps the surface intentionally focused: one window, vertical tabs, a smart address bar, browser navigation controls, and a per-tab network selector.
+The first version keeps the surface intentionally focused: one window, a polished NorthStar home screen, movable tabs, a smart address bar, browser navigation controls, settings, theme selection, search engine selection, and a per-tab network selector.
 
 ## Highlights
 
 - Native macOS app bundle, no Electron runtime.
 - `WKWebView` rendering with AppKit window and menu integration.
-- Vertical tab sidebar with new tab, close tab, and tab switching.
+- Beautiful tab cards with active-state accents and configurable placement: left, top, right, or bottom.
+- NorthStar home screen with integrated search and quick links.
 - Smart address bar that accepts URLs, localhost addresses, file URLs, or search text.
+- Search engine picker for DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
+- Theme picker for System, Light, and Dark.
 - Per-tab network modes: System, Private, Tor SOCKS, and Localhost.
 - New-window handling opens links into a new NorthStar tab instead of losing context.
 - Build script that produces `Build/NorthStar.app`.
+
+## Settings
+
+Open settings with `Command-,` or the gear button in the toolbar.
+
+| Setting | Options |
+| --- | --- |
+| Search engine | DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, Startpage |
+| Tabs position | Left, Top, Right, Bottom |
+| Theme | System, Light, Dark |
+
+Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, and tab layout between launches.
 
 ## Network Modes
 
@@ -44,6 +59,7 @@ When a tab's network mode changes, NorthStar recreates that tab's `WKWebView` wi
 | --- | --- |
 | `Command-T` | New tab |
 | `Command-W` | Close tab |
+| `Command-,` | Settings |
 | `Shift-Command-W` | Close window |
 | `Command-L` | Focus address bar |
 | `Command-R` | Reload or stop loading |
@@ -115,9 +131,10 @@ NorthStar is currently a compact single-target SwiftPM app.
 flowchart LR
     AppDelegate["AppDelegate"] --> Window["BrowserWindowController"]
     Window --> Controller["BrowserViewController"]
-    Controller --> Sidebar["Vertical tab sidebar"]
+    Controller --> TabBar["Movable tab bar"]
     Controller --> Toolbar["Navigation toolbar"]
     Controller --> Tabs["BrowserTab models"]
+    Controller --> Preferences["AppPreferences"]
     Tabs --> WebView["WKWebView"]
     Tabs --> NetworkProfile["NetworkProfile"]
     NetworkProfile --> DataStore["WKWebsiteDataStore"]
@@ -128,18 +145,17 @@ Core pieces:
 
 - `BrowserViewController` owns the window UI, active tab state, navigation actions, and WebKit delegates.
 - `BrowserTab` wraps a `WKWebView` and observes title, URL, progress, loading, and history state.
+- `AppPreferences` stores theme, search engine, and tab placement in `UserDefaults`.
 - `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
 - `NetworkPolicy` blocks disallowed URLs in Localhost mode.
 
 ## Roadmap
 
-- Horizontal or compact tab layout option.
 - Bookmarks and history UI.
 - Downloads with progress.
 - Find in page.
 - Content blocking.
 - Per-site permissions.
-- Search engine picker.
 - Optional custom SOCKS/HTTP proxy settings.
 - App icon and signed release packaging.
 
