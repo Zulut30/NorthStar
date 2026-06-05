@@ -5,3 +5,14 @@
 *.xcuserdata
 *.swiftpm
 *.swp
+
+# External tool repos (cloned, not part of NorthStar source)
+/codegraph/
+/agentmemory/
+/Understand-Anything/
+/Anthropic-Cybersecurity-Skills/
+
+# Tool-managed dirs
+/.codegraph/
+/.agents/
+/.understand-anything/

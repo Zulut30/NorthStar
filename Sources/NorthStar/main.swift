@@ -144,7 +144,6 @@ private final class BrowserViewController: NSViewController {
 
     private let browserContentView = NSView()
     private let toolbarView = NSVisualEffectView()
-    private let brandTitleField = NSTextField(labelWithString: appName)
     private let webContainerView = NSView()
 
     private let backButton = IconButton(symbolName: "chevron.left", tooltip: "Назад")
@@ -154,7 +153,6 @@ private final class BrowserViewController: NSViewController {
     private let readerButton = IconButton(symbolName: "text.rectangle.page", tooltip: "Режим чтения")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
     private let toolsButton = ToolbarActionButton(symbolName: "wrench.and.screwdriver", title: "Инструменты", tooltip: "Инструменты браузера", width: 126)
-    private let settingsButton = ToolbarActionButton(symbolName: "gearshape", title: "Настройки", tooltip: settingsTitle, width: 104)
     private let addressField = NSTextField()
     private let addressSuggestionPopover = NSPopover()
     private let addressSuggestionViewController = AddressSuggestionViewController()
@@ -164,7 +162,6 @@ private final class BrowserViewController: NSViewController {
     private let networkPopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let progressIndicator = NSProgressIndicator()
 
-    private let brandLogoView = NSImageView()
     private let toolbarTintView = GradientTintView()
     private let toolbarSeparatorView = NSView()
     private let tabBarTintView = GradientTintView()
@@ -1135,19 +1132,6 @@ private final class BrowserViewController: NSViewController {
         toolbarSeparatorView.translatesAutoresizingMaskIntoConstraints = false
         toolbarSeparatorView.wantsLayer = true
 
-        brandLogoView.translatesAutoresizingMaskIntoConstraints = false
-        brandLogoView.image = NSApp.applicationIconImage
-        brandLogoView.imageScaling = .scaleProportionallyUpOrDown
-        brandLogoView.wantsLayer = true
-        brandLogoView.layer?.cornerRadius = 7
-        brandLogoView.layer?.masksToBounds = true
-        brandLogoView.toolTip = appName
-
-        brandTitleField.translatesAutoresizingMaskIntoConstraints = false
-        brandTitleField.font = .systemFont(ofSize: 16, weight: .bold)
-        brandTitleField.lineBreakMode = .byTruncatingTail
-        brandTitleField.setContentCompressionResistancePriority(.required, for: .horizontal)
-
         webContainerView.translatesAutoresizingMaskIntoConstraints = false
         webContainerView.wantsLayer = true
 
@@ -1217,15 +1201,13 @@ private final class BrowserViewController: NSViewController {
         reloadButton.action = #selector(reloadCommand(_:))
         toolsButton.target = self
         toolsButton.action = #selector(showToolsMenu(_:))
-        settingsButton.target = self
-        settingsButton.action = #selector(showSettingsCommand(_:))
 
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(bookmarksBarView)
         browserContentView.addSubview(webContainerView)
 
         toolbarView.addSubview(toolbarTintView)
-        [toolbarSeparatorView, brandLogoView, brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, reloadButton, toolsButton, settingsButton, progressIndicator].forEach {
+        [toolbarSeparatorView, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, reloadButton, toolsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -1257,15 +1239,7 @@ private final class BrowserViewController: NSViewController {
             toolbarSeparatorView.bottomAnchor.constraint(equalTo: toolbarView.bottomAnchor),
             toolbarSeparatorView.heightAnchor.constraint(equalToConstant: 1),
 
-            brandLogoView.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor, constant: 14),
-            brandLogoView.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
-            brandLogoView.widthAnchor.constraint(equalToConstant: 26),
-            brandLogoView.heightAnchor.constraint(equalToConstant: 26),
-
-            brandTitleField.leadingAnchor.constraint(equalTo: brandLogoView.trailingAnchor, constant: 9),
-            brandTitleField.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
-
-            backButton.leadingAnchor.constraint(equalTo: brandTitleField.trailingAnchor, constant: 16),
+            backButton.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor, constant: 14),
             backButton.centerYAnchor.constraint(equalTo: toolbarView.centerYAnchor, constant: -1),
 
             forwardButton.leadingAnchor.constraint(equalTo: backButton.trailingAnchor, constant: 8),
@@ -1280,10 +1254,7 @@ private final class BrowserViewController: NSViewController {
             readerButton.leadingAnchor.constraint(equalTo: bookmarkButton.trailingAnchor, constant: 8),
             readerButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            settingsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
-            settingsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
-
-            toolsButton.trailingAnchor.constraint(equalTo: settingsButton.leadingAnchor, constant: -8),
+            toolsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
             toolsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
             reloadButton.trailingAnchor.constraint(equalTo: toolsButton.leadingAnchor, constant: -8),
@@ -1826,7 +1797,6 @@ private final class BrowserViewController: NSViewController {
         view.layer?.backgroundColor = colors.window.cgColor
         browserContentView.layer?.backgroundColor = colors.window.cgColor
         webContainerView.layer?.backgroundColor = colors.webBackground.cgColor
-        brandTitleField.textColor = colors.brand
         tabBarTitle.textColor = colors.secondaryText
 
         toolbarTintView.gradientLayer?.colors = [
@@ -5457,6 +5427,7 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
     func makeWebViewConfiguration() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+        configuration.applicationNameForUserAgent = BrowserUserAgent.applicationName
         AdBlocker.install(in: configuration, mode: AppPreferences.shared.adBlockMode)
 
         switch self {
