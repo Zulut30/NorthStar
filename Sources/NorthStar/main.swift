@@ -6462,8 +6462,6 @@ private enum HomePage {
     static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry]) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
-        let region = searchRegion.displayTitle.htmlEscaped
-        let language = searchLanguage.displayTitle.htmlEscaped
         let engineLogo = searchEngine.logoURL.htmlEscaped
         let engineOptions = SearchEngine.allCases.map { option in
             let selected = option == searchEngine ? " selected" : ""
@@ -6477,30 +6475,46 @@ private enum HomePage {
             let selected = option == searchLanguage ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.displayTitle.htmlEscaped)</option>"
         }.joined()
-        let recentMarkup = recentHistory.prefix(6).map { entry in
-            """
-            <a class="recent-item" href="\(entry.url.htmlEscaped)">
-              <span class="site-dot"></span>
+        func tileLetter(_ title: String) -> String {
+            let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let first = trimmed.first else { return "•" }
+            return String(first).uppercased().htmlEscaped
+        }
+
+        let recentMarkup = recentHistory.prefix(8).enumerated().map { index, entry in
+            let host = URL(string: entry.url)?.host(percentEncoded: false) ?? entry.url
+            return """
+            <a class="recent-item" href="\(entry.url.htmlEscaped)" style="--i: \(index)">
+              <span class="site-dot">\(tileLetter(entry.title))</span>
               <span class="recent-copy">
                 <strong>\(entry.title.htmlEscaped)</strong>
-                <small>\(entry.url.htmlEscaped)</small>
+                <small>\(host.htmlEscaped)</small>
               </span>
             </a>
             """
         }.joined()
-        let defaultQuickLinks = """
-            <a class="quick-link" href="https://github.com"><strong>GitHub</strong><small>github.com</small></a>
-            <a class="quick-link" href="https://news.ycombinator.com"><strong>Hacker News</strong><small>news.ycombinator.com</small></a>
-            <a class="quick-link" href="https://developer.apple.com"><strong>Apple Dev</strong><small>developer.apple.com</small></a>
-            <a class="quick-link" href="http://localhost:3000"><strong>Localhost</strong><small>localhost:3000</small></a>
+        let defaultQuickLinkSources: [(title: String, host: String, url: String)] = [
+            ("GitHub", "github.com", "https://github.com"),
+            ("Hacker News", "news.ycombinator.com", "https://news.ycombinator.com"),
+            ("Apple Dev", "developer.apple.com", "https://developer.apple.com"),
+            ("Localhost", "localhost:3000", "http://localhost:3000")
+        ]
+        let quickLinkSources: [(title: String, host: String, url: String)] = bookmarks.isEmpty
+            ? defaultQuickLinkSources
+            : bookmarks.prefix(8).map { entry in
+                (title: entry.title, host: URL(string: entry.url)?.host(percentEncoded: false) ?? entry.url, url: entry.url)
+            }
+        let quickLinksMarkup = quickLinkSources.enumerated().map { index, link in
             """
-        let bookmarkQuickLinks = bookmarks.prefix(8).map { entry in
-            let host = URL(string: entry.url)?.host(percentEncoded: false) ?? entry.url
-            return """
-            <a class="quick-link" href="\(entry.url.htmlEscaped)"><strong>\(entry.title.htmlEscaped)</strong><small>\(host.htmlEscaped)</small></a>
+            <a class="quick-link" href="\(link.url.htmlEscaped)" style="--i: \(index)">
+              <span class="tile-icon">\(tileLetter(link.title))</span>
+              <span class="tile-copy">
+                <strong>\(link.title.htmlEscaped)</strong>
+                <small>\(link.host.htmlEscaped)</small>
+              </span>
+            </a>
             """
         }.joined()
-        let quickLinksMarkup = bookmarkQuickLinks.isEmpty ? defaultQuickLinks : bookmarkQuickLinks
 
         return """
         <!doctype html>
@@ -6537,6 +6551,7 @@ private enum HomePage {
               color: var(--text);
               background: var(--home-bg);
               overflow: auto;
+              -webkit-font-smoothing: antialiased;
             }
             body::before {
               content: "";
@@ -6546,7 +6561,6 @@ private enum HomePage {
               background: var(--home-overlay);
               background-size: var(--home-overlay-size);
               opacity: var(--home-overlay-opacity);
-              mask-image: radial-gradient(circle at center, black, transparent 78%);
             }
             body::after {
               content: "";
@@ -6554,495 +6568,385 @@ private enum HomePage {
               inset: 0;
               pointer-events: none;
               background:
-                linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 38%),
-                linear-gradient(180deg, rgba(255,255,255,0.04), transparent 42%);
+                radial-gradient(640px 420px at 14% -6%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 70%),
+                radial-gradient(760px 520px at 88% 110%, color-mix(in srgb, var(--accent-2) 13%, transparent), transparent 72%);
+            }
+            @keyframes rise {
+              from { opacity: 0; transform: translateY(14px); }
+              to { opacity: 1; transform: none; }
+            }
+            @media (prefers-reduced-motion: reduce) {
+              *, *::before, *::after { animation: none !important; transition: none !important; }
             }
             main {
-              width: min(var(--page-width), calc(100vw - 48px));
+              width: min(1060px, calc(100vw - 48px));
               display: grid;
-              gap: 18px;
+              gap: 26px;
               position: relative;
               z-index: 1;
-              margin: 34px auto 48px;
+              margin: clamp(20px, 4vh, 44px) auto 56px;
+            }
+            .topbar {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
+              animation: rise 0.5s ease both;
+            }
+            .brand {
+              display: inline-flex;
+              align-items: center;
+              gap: 10px;
+              font-size: 15px;
+              font-weight: 800;
+              letter-spacing: 0.01em;
+            }
+            .brand-mark {
+              width: 30px;
+              height: 30px;
+              display: grid;
+              place-items: center;
+              border-radius: 10px;
+              color: #071015;
+              font-size: 13px;
+              font-weight: 900;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
+              box-shadow: 0 6px 18px color-mix(in srgb, var(--accent) 35%, transparent), inset 0 0 0 1px rgba(255,255,255,0.25);
+            }
+            .chip {
+              display: inline-flex;
+              align-items: center;
+              gap: 7px;
+              min-height: 34px;
+              padding: 0 14px;
+              border: 1px solid var(--line);
+              border-radius: 999px;
+              color: var(--muted);
+              background: color-mix(in srgb, var(--panel) 80%, transparent);
+              font-size: 13px;
+              font-weight: 650;
+              text-decoration: none;
+              backdrop-filter: blur(14px);
+              transition: color 0.18s, border-color 0.18s, background 0.18s;
+            }
+            .chip:hover {
+              color: var(--text);
+              border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+              background: color-mix(in srgb, var(--accent) 8%, var(--panel));
             }
             .hero {
               display: grid;
-              grid-template-columns: auto minmax(0, 1fr);
-              gap: 18px;
-              align-items: center;
-              padding: 18px 2px 4px;
+              justify-items: center;
+              gap: 8px;
+              text-align: center;
+              padding: clamp(6px, 4vh, 34px) 0 2px;
+              animation: rise 0.55s 0.05s ease both;
             }
-            .brand-chip {
-              width: 58px;
-              height: 58px;
-              display: grid;
-              place-items: center;
-              border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
-              border-radius: 16px;
-              background: color-mix(in srgb, var(--panel) 72%, transparent);
-              box-shadow: 0 18px 44px var(--shadow);
-              font-weight: 900;
-              font-size: 18px;
+            .clock {
+              font-size: clamp(58px, 11vw, 96px);
+              font-weight: 220;
+              line-height: 1;
+              letter-spacing: -0.02em;
+              font-variant-numeric: tabular-nums;
             }
-            h1 {
+            .greeting {
               margin: 0;
-              font-size: clamp(44px, 7vw, 76px);
-              line-height: 0.92;
-              letter-spacing: 0;
-              font-weight: 800;
+              font-size: 17px;
+              font-weight: 600;
             }
-            .kicker {
-              margin: 0 0 6px;
-              color: var(--accent);
-              font-size: 12px;
-              font-weight: 800;
-              letter-spacing: 0.08em;
-              text-transform: uppercase;
-            }
-            .sub {
-              margin: 10px 0 0;
+            .date {
+              margin: 0;
               color: var(--muted);
-              font-size: 16px;
-              line-height: 1.45;
+              font-size: 13.5px;
+              font-weight: 550;
             }
+            .date::first-letter { text-transform: uppercase; }
             .command {
               display: grid;
-              gap: 12px;
-              padding: 14px;
-              border: 1px solid var(--line);
-              border-radius: 18px;
-              background: color-mix(in srgb, var(--panel) 88%, transparent);
-              box-shadow: 0 24px 64px var(--shadow);
-              backdrop-filter: blur(18px);
+              justify-items: center;
+              gap: 14px;
+              animation: rise 0.55s 0.1s ease both;
             }
             .search {
-              display: grid;
-              grid-template-columns: minmax(240px, 1fr) auto;
-              gap: 10px;
+              width: min(660px, 100%);
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              min-height: 62px;
+              padding: 0 8px 0 20px;
+              border: 1px solid var(--line);
+              border-radius: 999px;
+              background: color-mix(in srgb, var(--panel) 90%, transparent);
+              box-shadow: 0 24px 60px var(--shadow);
+              backdrop-filter: blur(20px);
+              transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
+            }
+            .search:focus-within {
+              border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
+              box-shadow: 0 26px 64px var(--shadow), 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+              transform: translateY(-1px);
+            }
+            .search-logo {
+              width: 22px;
+              height: 22px;
+              flex: none;
+              border-radius: 6px;
+              object-fit: contain;
             }
             input {
-              width: 100%;
+              flex: 1;
               min-width: 0;
-              min-height: 58px;
-              border: 1px solid transparent;
-              outline: 0;
-              border-radius: 14px;
-              padding: 0 18px;
-              font-size: 17px;
-              font-weight: 650;
-              color: var(--text);
-              background: color-mix(in srgb, var(--panel-strong) 58%, transparent);
-            }
-            input:focus { border-color: color-mix(in srgb, var(--accent) 54%, var(--line)); }
-            input::placeholder { color: var(--muted); }
-            select {
-              appearance: none;
-              -webkit-appearance: none;
-              width: 100%;
-              min-width: 0;
-              min-height: 30px;
+              height: 60px;
               border: 0;
               outline: 0;
-              border-radius: 10px;
-              padding: 0 28px 0 0;
-              font-size: 14px;
-              font-weight: 800;
-              color: var(--text);
               background: transparent;
-              cursor: pointer;
+              color: var(--text);
+              font-size: 17px;
+              font-weight: 600;
             }
-            .select-with-logo {
-              display: grid;
-              grid-template-columns: 20px minmax(0, 1fr);
-              align-items: center;
-              gap: 8px;
-              min-width: 0;
-            }
-            .select-logo {
-              width: 18px;
-              height: 18px;
-              border-radius: 5px;
-              object-fit: contain;
-              background: color-mix(in srgb, var(--panel-strong) 72%, white);
-              box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 70%, transparent);
-            }
-            .context-engine {
-              display: inline-flex;
-              align-items: center;
-              gap: 6px;
-            }
-            .context-engine img {
-              width: 16px;
-              height: 16px;
-              border-radius: 4px;
-              object-fit: contain;
-            }
+            input::placeholder { color: var(--muted); }
             button {
+              flex: none;
               border: 0;
-              border-radius: 14px;
-              padding: 0 22px;
-              min-width: 118px;
-              min-height: 58px;
-              font-size: 15px;
-              font-weight: 850;
+              min-height: 46px;
+              padding: 0 24px;
+              border-radius: 999px;
               color: #071015;
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
+              font-size: 14px;
+              font-weight: 800;
               cursor: pointer;
+              transition: transform 0.15s, filter 0.15s;
             }
-            button:hover { filter: brightness(1.05); }
+            button:hover { filter: brightness(1.06); transform: scale(1.03); }
+            button:active { transform: scale(0.98); }
             .filters {
-              display: grid;
-              grid-template-columns: repeat(3, minmax(0, 1fr));
-              gap: 10px;
+              display: flex;
+              flex-wrap: wrap;
+              justify-content: center;
+              gap: 8px;
             }
             .filter {
-              display: grid;
-              gap: 5px;
-              padding: 10px 12px;
-              border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
-              border-radius: 14px;
-              background: color-mix(in srgb, var(--panel-strong) 48%, transparent);
               position: relative;
+              display: inline-flex;
+              align-items: center;
+              gap: 8px;
+              min-height: 36px;
+              padding: 0 30px 0 14px;
+              border: 1px solid var(--line);
+              border-radius: 999px;
+              background: color-mix(in srgb, var(--panel) 78%, transparent);
+              backdrop-filter: blur(12px);
+              transition: border-color 0.18s, background 0.18s;
+            }
+            .filter:hover {
+              border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
             }
             .filter::after {
               content: "";
               position: absolute;
               right: 14px;
-              bottom: 20px;
-              width: 7px;
-              height: 7px;
-              border-right: 2px solid var(--muted);
-              border-bottom: 2px solid var(--muted);
-              transform: rotate(45deg);
+              top: 50%;
+              width: 6px;
+              height: 6px;
+              border-right: 1.5px solid var(--muted);
+              border-bottom: 1.5px solid var(--muted);
+              transform: translateY(-62%) rotate(45deg);
               pointer-events: none;
             }
-            .filter span,
-            .section-label,
-            .context {
+            .filter span {
               color: var(--muted);
-              font-size: 11px;
+              font-size: 10.5px;
               font-weight: 800;
-              letter-spacing: 0.04em;
+              letter-spacing: 0.06em;
               text-transform: uppercase;
             }
-            .context {
-              display: flex;
-              gap: 8px;
-              align-items: center;
-              text-transform: none;
-              letter-spacing: 0;
+            select {
+              appearance: none;
+              -webkit-appearance: none;
+              max-width: 180px;
+              border: 0;
+              outline: 0;
+              background: transparent;
+              color: var(--text);
               font-size: 13px;
-              font-weight: 650;
+              font-weight: 700;
+              cursor: pointer;
             }
-            .context::before {
-              content: "";
-              width: 7px;
-              height: 7px;
-              border-radius: 999px;
-              background: var(--accent);
+            .select-logo {
+              width: 16px;
+              height: 16px;
+              border-radius: 4px;
+              object-fit: contain;
             }
             .dashboard {
               display: grid;
-              grid-template-columns: minmax(0, 1.05fr) minmax(260px, 0.95fr);
-              gap: 14px;
+              grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);
+              gap: 16px;
               align-items: start;
-            }
-            .stack {
-              display: grid;
-              gap: 14px;
+              animation: rise 0.55s 0.15s ease both;
             }
             .panel {
-              display: grid;
-              gap: 12px;
-              padding: 16px;
               border: 1px solid var(--line);
-              border-radius: 18px;
-              background: color-mix(in srgb, var(--panel) 82%, transparent);
-              box-shadow: 0 16px 42px var(--shadow);
-              backdrop-filter: blur(16px);
+              border-radius: 22px;
+              background: color-mix(in srgb, var(--panel) 84%, transparent);
+              box-shadow: 0 18px 48px var(--shadow);
+              backdrop-filter: blur(18px);
+              overflow: hidden;
             }
             .panel-head {
               display: flex;
               justify-content: space-between;
-              align-items: center;
+              align-items: baseline;
               gap: 12px;
+              padding: 16px 18px 6px;
             }
             .panel h2 {
               margin: 0;
-              font-size: 16px;
-              line-height: 1.2;
+              color: var(--muted);
+              font-size: 12px;
+              font-weight: 800;
+              letter-spacing: 0.07em;
+              text-transform: uppercase;
             }
+            .panel-link {
+              color: var(--accent);
+              font-size: 12.5px;
+              font-weight: 700;
+              text-decoration: none;
+              white-space: nowrap;
+            }
+            .panel-link:hover { text-decoration: underline; }
             .quick {
               display: grid;
               grid-template-columns: repeat(2, minmax(0, 1fr));
-              gap: 10px;
+              gap: 8px;
+              padding: 10px 12px 14px;
             }
             .quick-link,
-            .action-link,
             .recent-item {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              padding: 11px 12px;
+              border: 1px solid transparent;
+              border-radius: 16px;
               color: var(--text);
               text-decoration: none;
-              border: 1px solid var(--line);
-              border-radius: 14px;
-              background: color-mix(in srgb, var(--panel-strong) 46%, transparent);
-              font-size: 14px;
-              font-weight: 760;
-            }
-            .quick-link {
-              min-height: 74px;
-              display: grid;
-              align-content: center;
-              gap: 7px;
-              padding: 13px;
-            }
-            .quick-link small {
-              min-width: 0;
-              overflow: hidden;
-              text-overflow: ellipsis;
-              white-space: nowrap;
-              color: var(--muted);
-              font-size: 12px;
+              transition: background 0.16s, border-color 0.16s, transform 0.16s;
+              animation: rise 0.5s calc(0.2s + var(--i, 0) * 0.045s) ease both;
             }
             .quick-link:hover,
-            .action-link:hover,
             .recent-item:hover {
-              border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
-              background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+              background: color-mix(in srgb, var(--panel-strong) 72%, transparent);
+              border-color: var(--line);
+              transform: translateY(-2px);
             }
-            .actions {
+            .tile-icon {
+              width: 42px;
+              height: 42px;
+              flex: none;
               display: grid;
-              gap: 9px;
-            }
-            .action-link {
-              min-height: 54px;
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              padding: 0 14px;
-            }
-            .arrow {
-              color: var(--accent);
-              font-weight: 900;
-            }
-            .recent {
-              display: grid;
-              gap: 9px;
-              max-height: 350px;
-              overflow: auto;
-              padding-right: 2px;
-            }
-            .recent-item {
-              display: grid;
-              grid-template-columns: auto minmax(0, 1fr);
-              gap: 10px;
-              align-items: center;
-              min-height: 58px;
-              padding: 10px 12px;
-            }
-            .site-dot {
-              width: 28px;
-              height: 28px;
-              border-radius: 10px;
+              place-items: center;
+              border-radius: 13px;
+              color: #071015;
+              font-size: 17px;
+              font-weight: 800;
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
-              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.34);
+              filter: hue-rotate(calc(var(--i, 0) * 26deg));
+              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28), 0 8px 18px color-mix(in srgb, var(--accent) 22%, transparent);
             }
+            .tile-copy,
             .recent-copy {
               min-width: 0;
               display: grid;
-              gap: 3px;
+              gap: 2px;
             }
-            .recent-copy strong,
-            .recent-copy small {
+            .tile-copy strong,
+            .recent-copy strong {
+              font-size: 14px;
+              font-weight: 700;
               overflow: hidden;
               text-overflow: ellipsis;
               white-space: nowrap;
             }
+            .tile-copy small,
             .recent-copy small {
               color: var(--muted);
               font-size: 12px;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            }
+            .recent {
+              display: grid;
+              gap: 4px;
+              padding: 8px 10px 12px;
+              max-height: 480px;
+              overflow: auto;
+            }
+            .recent-item {
+              padding: 8px 10px;
+              border-radius: 14px;
+            }
+            .site-dot {
+              width: 34px;
+              height: 34px;
+              flex: none;
+              display: grid;
+              place-items: center;
+              border-radius: 11px;
+              color: #071015;
+              font-size: 14px;
+              font-weight: 800;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
+              filter: hue-rotate(calc(var(--i, 0) * 22deg));
+              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
             }
             .empty {
-              margin: 0;
-              color: var(--muted);
+              margin: 8px 12px 14px;
+              padding: 18px 15px;
               border: 1px dashed var(--line);
               border-radius: 14px;
-              padding: 15px;
-              font-size: 13px;
-            }
-            @media (max-width: 960px) {
-              .dashboard { grid-template-columns: 1fr; }
-              .filters { grid-template-columns: 1fr; }
-            }
-            @media (max-width: 680px) {
-              main { width: min(var(--page-width), calc(100vw - 28px)); margin-top: 22px; }
-              .hero { grid-template-columns: 1fr; }
-              .search { grid-template-columns: 1fr; }
-              input, button { min-height: 50px; }
-              .quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-            }
-            /* UI mockup pass: compact browser dashboard, not a landing page. */
-            :root {
-              --radius: 8px;
-              --page-width: min(1180px, \(palette.pageWidth));
-            }
-            body::before {
-              opacity: calc(var(--home-overlay-opacity) * 0.45);
-              mask-image: none;
-            }
-            body::after { display: none; }
-            main {
-              width: min(var(--page-width), calc(100vw - 48px));
-              gap: 16px;
-              margin: 28px auto 44px;
-            }
-            .hero {
-              grid-template-columns: auto minmax(0, 1fr) auto;
-              gap: 12px;
-              min-height: 58px;
-              align-items: center;
-              padding: 0 0 12px;
-              border-bottom: 1px solid var(--line);
-            }
-            .hero::after {
-              content: "\(engine) · \(region) · \(language)";
-              min-height: 32px;
-              display: inline-flex;
-              align-items: center;
-              border: 1px solid var(--line);
-              border-radius: 999px;
-              padding: 0 11px;
               color: var(--muted);
-              background: color-mix(in srgb, var(--panel) 82%, transparent);
-              font-size: 12px;
-              font-weight: 760;
-              white-space: nowrap;
+              font-size: 13px;
+              text-align: center;
             }
-            .brand-chip {
-              width: 32px;
-              height: 32px;
-              border-radius: var(--radius);
-              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.28);
-              font-size: 11px;
-            }
-            h1 {
-              font-size: 26px;
-              line-height: 1.1;
-              font-weight: 820;
-            }
-            .kicker { display: none; }
-            .sub {
-              margin-top: 3px;
-              font-size: 12px;
-              overflow: hidden;
-              text-overflow: ellipsis;
-              white-space: nowrap;
-            }
-            .command,
-            .panel {
-              border-radius: var(--radius);
-              box-shadow: 0 14px 34px color-mix(in srgb, var(--shadow) 70%, transparent);
-            }
-            .command {
-              gap: 12px;
-              padding: 14px;
-              background: color-mix(in srgb, var(--panel) 90%, transparent);
-            }
-            .search { grid-template-columns: minmax(0, 1fr) 112px; }
-            input {
-              min-height: 56px;
-              border: 1px solid var(--line);
-              border-radius: var(--radius);
-              background: color-mix(in srgb, var(--panel-strong) 64%, transparent);
-              font-size: 16px;
-              font-weight: 680;
-            }
-            input:focus {
-              border-color: color-mix(in srgb, var(--accent) 68%, var(--line));
-              box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
-            }
-            button {
-              min-width: 112px;
-              min-height: 56px;
-              border-radius: var(--radius);
-              padding: 0 16px;
-            }
-            .filter {
-              min-height: 50px;
-              align-content: center;
-              border-radius: var(--radius);
-              border-color: var(--line);
-              padding: 8px 36px 8px 12px;
-            }
-            .filter::after {
-              top: 50%;
-              bottom: auto;
-              transform: translateY(-62%) rotate(45deg);
-            }
-            .dashboard {
-              grid-template-columns: minmax(0, 1fr) 360px;
-              gap: 16px;
-            }
-            .stack { gap: 16px; }
-            .panel {
-              gap: 0;
-              padding: 0;
-              overflow: hidden;
-            }
-            .panel-head {
-              min-height: 50px;
-              padding: 0 14px;
-              border-bottom: 1px solid var(--line);
-            }
-            .panel h2 {
-              font-size: 15px;
-              font-weight: 820;
-            }
-            .quick,
-            .actions,
-            .recent { padding: 12px; }
-            .quick-link,
-            .action-link,
-            .recent-item { border-radius: var(--radius); }
-            .quick-link {
-              min-height: 62px;
-              padding: 12px;
-            }
-            .action-link {
-              min-height: 58px;
-              display: grid;
-              grid-template-columns: minmax(0, 1fr) auto;
-              gap: 12px;
-            }
-            .recent { max-height: 558px; }
-            @media (max-width: 980px) {
-              .hero { grid-template-columns: auto minmax(0, 1fr); }
-              .hero::after { grid-column: 1 / -1; justify-self: start; }
+            @media (max-width: 920px) {
               .dashboard { grid-template-columns: 1fr; }
             }
-            @media (max-width: 720px) {
-              main { width: min(var(--page-width), calc(100vw - 28px)); margin-top: 20px; }
-              .search,
-              .filters { grid-template-columns: 1fr; }
+            @media (max-width: 640px) {
+              main { width: min(1060px, calc(100vw - 28px)); gap: 20px; }
+              .search { min-height: 56px; padding-left: 16px; }
+              input { height: 54px; font-size: 16px; }
               .quick { grid-template-columns: 1fr; }
             }
           </style>
         </head>
         <body>
           <main>
-            <section class="hero" aria-label="NorthStar">
-              <div class="brand-chip">NS</div>
-              <div>
-                <p class="kicker">Браузер NorthStar</p>
-                <h1>Новая вкладка</h1>
-                <p class="sub">Поиск, быстрые ссылки, инструменты и недавние страницы.</p>
-              </div>
+            <header class="topbar" aria-label="NorthStar">
+              <div class="brand"><span class="brand-mark">NS</span> NorthStar</div>
+              <a class="chip" href="\(northStarSettingsScheme)://home">Настройки</a>
+            </header>
+            <section class="hero" aria-label="Время">
+              <div class="clock" id="clock">--:--</div>
+              <p class="greeting" id="greeting">Добро пожаловать</p>
+              <p class="date" id="date"></p>
             </section>
             <section class="command" aria-label="Поиск">
               <form class="search" id="searchForm">
-                <input id="query" name="q" autofocus autocomplete="off" placeholder="Поиск или адрес сайта">
-                <button type="submit">Открыть</button>
+                <img class="search-logo" id="engineLogo" src="\(engineLogo)" alt="" width="22" height="22">
+                <input id="query" name="q" autofocus autocomplete="off" placeholder="Поиск в \(engine) или адрес сайта">
+                <button type="submit">Найти</button>
               </form>
               <div class="filters" aria-label="Настройки поиска">
+                <label class="filter">
+                  <span>Движок</span>
+                  <select id="engine" name="engine" aria-label="Поисковая система">
+                    \(engineOptions)
+                  </select>
+                </label>
                 <label class="filter">
                   <span>Регион</span>
                   <select id="region" name="region" aria-label="Регион поиска">
@@ -7055,46 +6959,22 @@ private enum HomePage {
                     \(languageOptions)
                   </select>
                 </label>
-                <label class="filter">
-                  <span>Движок</span>
-                  <div class="select-with-logo">
-                    <img class="select-logo" id="engineLogo" src="\(engineLogo)" alt="" width="18" height="18">
-                    <select id="engine" name="engine" aria-label="Поисковая система">
-                      \(engineOptions)
-                    </select>
-                  </div>
-                </label>
               </div>
-              <div class="context"><span class="context-engine"><img id="contextEngineLogo" src="\(engineLogo)" alt="" width="16" height="16"> \(engine)</span> · \(region) · \(language)</div>
             </section>
             <section class="dashboard" aria-label="Быстрый старт">
-              <div class="stack">
-                <div class="panel">
-                  <div class="panel-head">
-                    <h2>Быстрые ссылки</h2>
-                    <span class="section-label">\(bookmarks.isEmpty ? "Закреплено" : "Закладки")</span>
-                  </div>
-                  <nav class="quick" aria-label="Быстрые ссылки">\(quickLinksMarkup)</nav>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>\(bookmarks.isEmpty ? "Быстрые ссылки" : "Закладки")</h2>
+                  <a class="panel-link" href="\(northStarSettingsScheme)://update?section=bookmarks">Все закладки →</a>
                 </div>
-                <div class="panel">
-                  <div class="panel-head">
-                    <h2>Действия</h2>
-                    <span class="section-label">Инструменты</span>
-                  </div>
-                  <div class="actions">
-                    <a class="action-link" href="\(northStarSettingsScheme)://home">Настройки <span class="arrow">→</span></a>
-                    <a class="action-link" href="\(northStarSettingsScheme)://update?section=bookmarks">Закладки <span class="arrow">→</span></a>
-                  </div>
-                </div>
+                <nav class="quick" aria-label="Быстрые ссылки">\(quickLinksMarkup)</nav>
               </div>
               <div class="panel">
                 <div class="panel-head">
-                  <h2>Недавние страницы</h2>
-                  <span class="section-label">История</span>
+                  <h2>Недавние</h2>
+                  <a class="panel-link" href="\(northStarSettingsScheme)://update?section=history">История →</a>
                 </div>
-                <div class="recent">
-                  \(recentMarkup.isEmpty ? "<p class=\"empty\">История пока пуста.</p>" : recentMarkup)
-                </div>
+                \(recentMarkup.isEmpty ? "<p class=\"empty\">История пока пуста — откройте первую страницу.</p>" : "<div class=\"recent\">\(recentMarkup)</div>")
               </div>
             </section>
           </main>
@@ -7105,12 +6985,22 @@ private enum HomePage {
             const region = document.getElementById("region");
             const language = document.getElementById("language");
             const engineLogo = document.getElementById("engineLogo");
-            const contextEngineLogo = document.getElementById("contextEngineLogo");
+            const clock = document.getElementById("clock");
+            const greeting = document.getElementById("greeting");
+            const dateLine = document.getElementById("date");
+            const updateClock = () => {
+              const now = new Date();
+              clock.textContent = now.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+              dateLine.textContent = now.toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });
+              const hour = now.getHours();
+              greeting.textContent = hour < 5 ? "Доброй ночи" : hour < 12 ? "Доброе утро" : hour < 18 ? "Добрый день" : "Добрый вечер";
+            };
+            updateClock();
+            setInterval(updateClock, 15000);
             const updateEngineLogo = () => {
               const option = engine.selectedOptions[0];
               if (!option?.dataset.logo) return;
               if (engineLogo) engineLogo.src = option.dataset.logo;
-              if (contextEngineLogo) contextEngineLogo.src = option.dataset.logo;
             };
             const updateContext = () => {
               updateEngineLogo();
