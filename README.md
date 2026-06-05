@@ -19,7 +19,7 @@ The first version keeps the surface intentionally focused: one window, a polishe
 
 - Native macOS app bundle, no Electron runtime.
 - `WKWebView` rendering with AppKit window and menu integration.
-- Beautiful tab cards with active-state accents and configurable placement: left, top, right, or bottom.
+- Thin Chrome-style tabs with active-state accents and configurable placement: left, top, right, or bottom.
 - NorthStar home screen with integrated search and quick links.
 - Smart address bar that accepts URLs, localhost addresses, file URLs, or search text.
 - Search engine picker in the toolbar, on the home screen, and in Settings.

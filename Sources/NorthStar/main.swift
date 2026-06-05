@@ -265,6 +265,8 @@ private final class BrowserViewController: NSViewController {
 
         newTabButton.target = self
         newTabButton.action = #selector(addTabFromButton(_:))
+        newTabButton.bezelStyle = .inline
+        newTabButton.isBordered = false
 
         tabScrollView.translatesAutoresizingMaskIntoConstraints = false
         tabScrollView.drawsBackground = false
@@ -499,7 +501,8 @@ private final class BrowserViewController: NSViewController {
         tabStackCrossAxisConstraint?.isActive = false
 
         let isHorizontal = placement.isHorizontal
-        tabBarTitle.isHidden = false
+        tabBarView.material = isHorizontal ? .headerView : .sidebar
+        tabBarTitle.isHidden = isHorizontal
         tabBarTitle.stringValue = placement == .top ? appName : "Вкладки"
         tabStack.orientation = isHorizontal ? .horizontal : .vertical
         tabStack.alignment = isHorizontal ? .height : .width
@@ -1306,7 +1309,8 @@ private final class AppPreferences {
 
     private init() {
         searchEngine = SearchEngine(rawValue: defaults.integer(forKey: Keys.searchEngine)) ?? .duckDuckGo
-        tabPlacement = TabPlacement(rawValue: defaults.integer(forKey: Keys.tabPlacement)) ?? .left
+        let savedTabPlacement = defaults.object(forKey: Keys.tabPlacement) as? Int
+        tabPlacement = savedTabPlacement.flatMap(TabPlacement.init(rawValue:)) ?? .top
         theme = ThemeMode(rawValue: defaults.integer(forKey: Keys.theme)) ?? .system
         colorScheme = ColorSchemeMode(rawValue: defaults.integer(forKey: Keys.colorScheme)) ?? .aurora
         design = DesignMode(rawValue: defaults.integer(forKey: Keys.design)) ?? .balanced
@@ -1951,117 +1955,117 @@ private enum DesignMode: Int, CaseIterable {
     var verticalTabBarWidth: CGFloat {
         switch self {
         case .balanced:
-            return 288
+            return 244
         case .compact:
-            return 248
+            return 220
         case .spacious:
-            return 320
-        case .focus:
             return 268
+        case .focus:
+            return 228
         }
     }
 
     var horizontalTabBarHeight: CGFloat {
         switch self {
         case .balanced:
-            return 68
+            return 48
         case .compact:
-            return 58
+            return 42
         case .spacious:
-            return 78
+            return 54
         case .focus:
-            return 62
+            return 44
         }
     }
 
     var horizontalTabHeaderWidth: CGFloat {
         switch self {
         case .balanced:
-            return 156
+            return 52
         case .compact:
-            return 138
+            return 46
         case .spacious:
-            return 178
+            return 58
         case .focus:
-            return 146
+            return 48
         }
     }
 
     var verticalTabRowHeight: CGFloat {
         switch self {
         case .balanced:
-            return 58
+            return 38
         case .compact:
-            return 48
+            return 34
         case .spacious:
-            return 66
+            return 42
         case .focus:
-            return 52
+            return 36
         }
     }
 
     var horizontalTabRowHeight: CGFloat {
         switch self {
         case .balanced:
-            return 44
+            return 34
         case .compact:
-            return 38
+            return 30
         case .spacious:
-            return 50
+            return 38
         case .focus:
-            return 40
+            return 32
         }
     }
 
     var horizontalTabWidth: CGFloat {
         switch self {
         case .balanced:
-            return 220
+            return 210
         case .compact:
-            return 184
+            return 176
         case .spacious:
-            return 252
+            return 232
         case .focus:
-            return 198
+            return 192
         }
     }
 
     var tabSpacing: CGFloat {
         switch self {
         case .balanced:
-            return 10
+            return 4
         case .compact:
-            return 6
+            return 3
         case .spacious:
-            return 12
+            return 6
         case .focus:
-            return 8
+            return 4
         }
     }
 
     var horizontalTabInset: CGFloat {
         switch self {
         case .balanced:
-            return 10
-        case .compact:
             return 6
+        case .compact:
+            return 5
         case .spacious:
-            return 12
+            return 7
         case .focus:
-            return 8
+            return 5
         }
     }
 
     var rowCornerRadius: CGFloat {
         switch self {
         case .balanced:
-            return 10
-        case .compact:
-            return 7
-        case .spacious:
             return 12
+        case .compact:
+            return 10
+        case .spacious:
+            return 14
         case .focus:
-            return 6
+            return 10
         }
     }
 
@@ -2579,9 +2583,14 @@ private final class TabRowView: NSView {
     private let detailField = NSTextField(labelWithString: "")
     private let closeButton = IconButton(symbolName: "xmark", tooltip: "Закрыть вкладку", width: 24, height: 22)
     private var isActive = false
+    private var isHovered = false
+    private var isHorizontalLayout = false
     private var heightConstraint: NSLayoutConstraint?
     private var titleTopConstraint: NSLayoutConstraint?
     private var titleCenterYConstraint: NSLayoutConstraint?
+    private var titleLeadingConstraint: NSLayoutConstraint?
+    private var indicatorWidthConstraint: NSLayoutConstraint?
+    private var trackingAreaReference: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -2589,14 +2598,14 @@ private final class TabRowView: NSView {
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
         layer?.cornerRadius = 10
-        layer?.borderWidth = 1
+        layer?.borderWidth = 0
 
         indicatorView.translatesAutoresizingMaskIntoConstraints = false
         indicatorView.wantsLayer = true
-        indicatorView.layer?.cornerRadius = 2
+        indicatorView.layer?.cornerRadius = 1.5
 
         titleField.translatesAutoresizingMaskIntoConstraints = false
-        titleField.font = .systemFont(ofSize: 13.5, weight: .semibold)
+        titleField.font = .systemFont(ofSize: 12.8, weight: .medium)
         titleField.lineBreakMode = .byTruncatingTail
 
         detailField.translatesAutoresizingMaskIntoConstraints = false
@@ -2606,6 +2615,7 @@ private final class TabRowView: NSView {
 
         closeButton.bezelStyle = .inline
         closeButton.isBordered = false
+        closeButton.contentTintColor = .secondaryLabelColor
         closeButton.target = self
         closeButton.action = #selector(closePressed(_:))
 
@@ -2617,20 +2627,24 @@ private final class TabRowView: NSView {
         let height = heightAnchor.constraint(equalToConstant: 58)
         let titleTop = titleField.topAnchor.constraint(equalTo: topAnchor, constant: 9)
         let titleCenterY = titleField.centerYAnchor.constraint(equalTo: centerYAnchor)
+        let titleLeading = titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18)
+        let indicatorWidth = indicatorView.widthAnchor.constraint(equalToConstant: 3)
         heightConstraint = height
         titleTopConstraint = titleTop
         titleCenterYConstraint = titleCenterY
+        titleLeadingConstraint = titleLeading
+        indicatorWidthConstraint = indicatorWidth
 
         NSLayoutConstraint.activate([
             height,
 
             indicatorView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 7),
-            indicatorView.topAnchor.constraint(equalTo: topAnchor, constant: 11),
-            indicatorView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11),
-            indicatorView.widthAnchor.constraint(equalToConstant: 4),
+            indicatorView.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            indicatorView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
+            indicatorWidth,
 
             titleTop,
-            titleField.leadingAnchor.constraint(equalTo: indicatorView.trailingAnchor, constant: 10),
+            titleLeading,
             titleField.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
 
             detailField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 2),
@@ -2652,12 +2666,43 @@ private final class TabRowView: NSView {
     func configure(title: String, detail: String, isActive: Bool, isHorizontal: Bool, design: DesignMode) {
         titleField.stringValue = title
         detailField.stringValue = detail
-        detailField.isHidden = isHorizontal
+        detailField.isHidden = true
         self.isActive = isActive
+        isHorizontalLayout = isHorizontal
         layer?.cornerRadius = design.rowCornerRadius
         heightConstraint?.constant = isHorizontal ? design.horizontalTabRowHeight : design.verticalTabRowHeight
-        titleTopConstraint?.isActive = !isHorizontal
-        titleCenterYConstraint?.isActive = isHorizontal
+        indicatorView.isHidden = isHorizontal
+        indicatorWidthConstraint?.constant = isHorizontal ? 0 : 3
+        titleLeadingConstraint?.constant = isHorizontal ? 14 : 18
+        titleTopConstraint?.isActive = false
+        titleCenterYConstraint?.isActive = true
+        updateStyle()
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+
+        if let trackingAreaReference {
+            removeTrackingArea(trackingAreaReference)
+        }
+
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.activeInKeyWindow, .inVisibleRect, .mouseEnteredAndExited],
+            owner: self,
+            userInfo: nil
+        )
+        trackingAreaReference = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateStyle()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
         updateStyle()
     }
 
@@ -2671,16 +2716,33 @@ private final class TabRowView: NSView {
 
     private func updateStyle() {
         let accent = NSColor.controlAccentColor
-        layer?.backgroundColor = isActive
-            ? accent.withAlphaComponent(0.18).cgColor
-            : NSColor.controlBackgroundColor.withAlphaComponent(0.42).cgColor
-        layer?.borderColor = isActive
-            ? accent.withAlphaComponent(0.55).cgColor
-            : NSColor.separatorColor.withAlphaComponent(0.28).cgColor
-        indicatorView.layer?.backgroundColor = isActive
-            ? accent.cgColor
-            : NSColor.separatorColor.withAlphaComponent(0.45).cgColor
-        detailField.textColor = isActive ? .labelColor : .secondaryLabelColor
+        titleField.font = .systemFont(ofSize: isHorizontalLayout ? 12.5 : 12.8, weight: isActive ? .semibold : .medium)
+        titleField.textColor = isActive ? .labelColor : .secondaryLabelColor
+        detailField.textColor = .secondaryLabelColor
+
+        if isHorizontalLayout {
+            let activeColor = NSColor.controlBackgroundColor.withAlphaComponent(0.82)
+            let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.28)
+            layer?.backgroundColor = isActive
+                ? activeColor.cgColor
+                : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor)
+            layer?.borderWidth = 0
+            layer?.borderColor = NSColor.clear.cgColor
+        } else {
+            let activeColor = accent.withAlphaComponent(0.11)
+            let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.22)
+            layer?.backgroundColor = isActive
+                ? activeColor.cgColor
+                : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor)
+            layer?.borderWidth = 0
+            layer?.borderColor = NSColor.clear.cgColor
+            indicatorView.layer?.backgroundColor = isActive
+                ? accent.cgColor
+                : NSColor.clear.cgColor
+        }
+
+        closeButton.alphaValue = isActive || isHovered ? 0.72 : 0
+        closeButton.contentTintColor = isActive ? .secondaryLabelColor : .tertiaryLabelColor
     }
 }
 
