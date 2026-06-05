@@ -167,11 +167,6 @@ private final class BrowserViewController: NSViewController {
     private let toolbarSeparatorView = NSView()
     private let tabBarTintView = GradientTintView()
 
-    private let featureBarView = NSVisualEffectView()
-    private let featureBarLabel = NSTextField(labelWithString: "Инструменты страницы")
-    private let aiFilterButton = ToolbarActionButton(symbolName: "sparkles.rectangle.stack", title: "ИИ-фильтр", tooltip: "Подсветка ИИ-текста и вердикт на странице", width: 124)
-    private let cssScraperButton = ToolbarActionButton(symbolName: "eyedropper.halffull", title: "CSS Scrapper", tooltip: "Цвета, шрифты, медиа и CSS-сводка сайта", width: 138)
-
     private let bookmarksBarView = NSVisualEffectView()
     private let bookmarksBarScrollView = NSScrollView()
     private let bookmarksBarStack = NSStackView()
@@ -425,7 +420,7 @@ private final class BrowserViewController: NSViewController {
     @objc func toggleAIFilterCommand(_ sender: Any?) {
         preferences.aiFilterEnabled.toggle()
         applyAIFilter(enabled: preferences.aiFilterEnabled)
-        syncFeatureBar()
+        tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
     }
 
     private func applyAIFilter(enabled: Bool) {
@@ -1232,7 +1227,6 @@ private final class BrowserViewController: NSViewController {
         toolsButton.action = #selector(showToolsMenu(_:))
 
         browserContentView.addSubview(toolbarView)
-        browserContentView.addSubview(featureBarView)
         browserContentView.addSubview(bookmarksBarView)
         browserContentView.addSubview(webContainerView)
 
@@ -1240,8 +1234,6 @@ private final class BrowserViewController: NSViewController {
         [toolbarSeparatorView, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, reloadButton, toolsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
-
-        configureFeatureBar()
 
         let toolbarHeight = toolbarView.heightAnchor.constraint(equalToConstant: preferences.design.toolbarHeight)
         toolbarHeightConstraint = toolbarHeight
@@ -1252,12 +1244,7 @@ private final class BrowserViewController: NSViewController {
             toolbarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
             toolbarHeight,
 
-            featureBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
-            featureBarView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
-            featureBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
-            featureBarView.heightAnchor.constraint(equalToConstant: 36),
-
-            bookmarksBarView.topAnchor.constraint(equalTo: featureBarView.bottomAnchor),
+            bookmarksBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
             bookmarksBarView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
             bookmarksBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
 
@@ -1331,60 +1318,6 @@ private final class BrowserViewController: NSViewController {
 
         renderTabs()
         syncToolbar()
-    }
-
-    private func configureFeatureBar() {
-        featureBarView.translatesAutoresizingMaskIntoConstraints = false
-        featureBarView.material = .titlebar
-        featureBarView.blendingMode = .withinWindow
-        featureBarView.state = .active
-
-        featureBarLabel.translatesAutoresizingMaskIntoConstraints = false
-        featureBarLabel.font = .systemFont(ofSize: 11, weight: .semibold)
-        featureBarLabel.textColor = .secondaryLabelColor
-        featureBarLabel.lineBreakMode = .byTruncatingTail
-
-        aiFilterButton.target = self
-        aiFilterButton.action = #selector(toggleAIFilterCommand(_:))
-        cssScraperButton.target = self
-        cssScraperButton.action = #selector(openCssScraperCommand(_:))
-
-        [featureBarLabel, aiFilterButton, cssScraperButton].forEach {
-            featureBarView.addSubview($0)
-        }
-
-        let separator = NSView()
-        separator.translatesAutoresizingMaskIntoConstraints = false
-        separator.wantsLayer = true
-        separator.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.5).cgColor
-        featureBarView.addSubview(separator)
-
-        NSLayoutConstraint.activate([
-            featureBarLabel.leadingAnchor.constraint(equalTo: featureBarView.leadingAnchor, constant: 14),
-            featureBarLabel.centerYAnchor.constraint(equalTo: featureBarView.centerYAnchor),
-
-            cssScraperButton.trailingAnchor.constraint(equalTo: featureBarView.trailingAnchor, constant: -12),
-            cssScraperButton.centerYAnchor.constraint(equalTo: featureBarView.centerYAnchor),
-
-            aiFilterButton.trailingAnchor.constraint(equalTo: cssScraperButton.leadingAnchor, constant: -8),
-            aiFilterButton.centerYAnchor.constraint(equalTo: featureBarView.centerYAnchor),
-
-            separator.leadingAnchor.constraint(equalTo: featureBarView.leadingAnchor),
-            separator.trailingAnchor.constraint(equalTo: featureBarView.trailingAnchor),
-            separator.bottomAnchor.constraint(equalTo: featureBarView.bottomAnchor),
-            separator.heightAnchor.constraint(equalToConstant: 1)
-        ])
-
-        syncFeatureBar()
-    }
-
-    private func syncFeatureBar() {
-        let active = preferences.aiFilterEnabled
-        aiFilterButton.contentTintColor = active ? .controlAccentColor : nil
-        aiFilterButton.title = active ? "ИИ-фильтр: вкл" : "ИИ-фильтр"
-        let browsable = activeTab?.isBrowsablePage ?? false
-        cssScraperButton.isEnabled = browsable
-        aiFilterButton.isEnabled = true
     }
 
     private func configureBookmarksBar() {
@@ -2229,7 +2162,8 @@ private final class BrowserViewController: NSViewController {
             recentHistory: BrowserHistoryStore.shared.entries,
             bookmarks: BookmarkStore.shared.entries,
             widgets: preferences.homeWidgets,
-            notes: preferences.homeNotes
+            notes: preferences.homeNotes,
+            aiFilterEnabled: preferences.aiFilterEnabled
         )
     }
 
@@ -2383,6 +2317,10 @@ private final class BrowserViewController: NSViewController {
             }
             if let note = components.queryItems?.first(where: { $0.name == "note" })?.value {
                 preferences.homeNotes = note
+            }
+            if components.queryItems?.contains(where: { $0.name == "ai" }) == true {
+                preferences.aiFilterEnabled.toggle()
+                applyAIFilter(enabled: preferences.aiFilterEnabled)
             }
             showHome(in: tab)
             return
@@ -2611,7 +2549,6 @@ private final class BrowserViewController: NSViewController {
         }
 
         view.window?.title = tab.profile.isPrivateMode ? "\(appName) - Приватно" : appName
-        syncFeatureBar()
     }
 
     private var isEditingAddress: Bool {
@@ -3159,7 +3096,7 @@ private final class BrowserTab {
         return icon
     }
 
-    func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry], widgets: Set<HomeWidget>, notes: String) {
+    func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry], widgets: Set<HomeWidget>, notes: String, aiFilterEnabled: Bool) {
         isShowingHome = true
         isShowingSettings = false
         isShowingParser = false
@@ -3178,7 +3115,7 @@ private final class BrowserTab {
             : Self.appLogoIcon()
         notifyChanged()
         webView.loadHTMLString(
-            HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory, bookmarks: bookmarks, widgets: widgets, notes: notes),
+            HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory, bookmarks: bookmarks, widgets: widgets, notes: notes, aiFilterEnabled: aiFilterEnabled),
             baseURL: nil
         )
     }
@@ -8390,7 +8327,7 @@ private enum SiteIconHTML {
 }
 
 private enum HomePage {
-    static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry], widgets: Set<HomeWidget>, notes: String) -> String {
+    static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry], widgets: Set<HomeWidget>, notes: String, aiFilterEnabled: Bool) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
         let engineLogo = searchEngine.logoURL.htmlEscaped
@@ -8824,6 +8761,51 @@ private enum HomePage {
               letter-spacing: 0.06em;
               text-transform: uppercase;
             }
+            .ai-filter {
+              display: inline-flex;
+              align-items: center;
+              gap: 10px;
+              min-height: 36px;
+              padding: 0 12px 0 14px;
+              border: 1px solid var(--line);
+              border-radius: 999px;
+              background: color-mix(in srgb, var(--panel) 78%, transparent);
+              backdrop-filter: blur(12px);
+              text-decoration: none;
+              transition: border-color 0.18s, background 0.18s;
+            }
+            .ai-filter:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+            .ai-filter.on { border-color: color-mix(in srgb, var(--accent) 60%, var(--line)); }
+            .ai-cap {
+              color: var(--muted);
+              font-size: 10.5px;
+              font-weight: 800;
+              letter-spacing: 0.06em;
+              text-transform: uppercase;
+            }
+            .ai-switch {
+              position: relative;
+              width: 38px;
+              height: 22px;
+              border-radius: 999px;
+              flex: none;
+              background: color-mix(in srgb, var(--muted) 32%, transparent);
+              transition: background 0.18s;
+            }
+            .ai-knob {
+              position: absolute;
+              top: 2px;
+              left: 2px;
+              width: 18px;
+              height: 18px;
+              border-radius: 50%;
+              background: #fff;
+              box-shadow: 0 1px 3px rgba(0,0,0,0.35);
+              transition: left 0.18s;
+            }
+            .ai-filter.on .ai-switch { background: var(--accent); }
+            .ai-filter.on .ai-knob { left: 18px; }
+            .ai-state { color: var(--text); font-size: 12px; font-weight: 700; min-width: 28px; }
             select {
               appearance: none;
               -webkit-appearance: none;
@@ -9096,6 +9078,11 @@ private enum HomePage {
                     \(languageOptions)
                   </select>
                 </label>
+                <a class="ai-filter\(aiFilterEnabled ? " on" : "")" href="\(northStarSearchScheme)://widgets?ai=toggle" role="switch" aria-checked="\(aiFilterEnabled ? "true" : "false")" title="Подсветка ИИ-текста и вердикт на открытых страницах">
+                  <span class="ai-cap">ИИ-контент</span>
+                  <span class="ai-switch"><span class="ai-knob"></span></span>
+                  <span class="ai-state">\(aiFilterEnabled ? "Вкл" : "Выкл")</span>
+                </a>
               </div>
             </section>
             \(dashboardWidgets)
