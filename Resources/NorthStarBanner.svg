@@ -1,0 +1,31 @@
+<svg width="1200" height="480" viewBox="0 0 1200 480" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="sky" x1="120" y1="52" x2="1030" y2="480" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#101827"/>
+      <stop offset="0.46" stop-color="#18273A"/>
+      <stop offset="1" stop-color="#0B3B45"/>
+    </linearGradient>
+    <linearGradient id="beam" x1="420" y1="50" x2="880" y2="430" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#8AE6FF" stop-opacity="0.82"/>
+      <stop offset="1" stop-color="#62F2B8" stop-opacity="0.14"/>
+    </linearGradient>
+    <filter id="softGlow" x="-40%" y="-40%" width="180%" height="180%" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="16"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="480" rx="36" fill="url(#sky)"/>
+  <path d="M740 96L820 278L1045 365L820 340L738 425L656 340L430 365L656 278L740 96Z" fill="url(#beam)" opacity="0.32"/>
+  <circle cx="740" cy="240" r="98" stroke="#8AE6FF" stroke-width="2" opacity="0.34"/>
+  <circle cx="740" cy="240" r="32" fill="#E9FBFF" filter="url(#softGlow)" opacity="0.74"/>
+  <circle cx="740" cy="240" r="9" fill="#FFFFFF"/>
+  <path d="M740 128L760 220L852 240L760 260L740 352L720 260L628 240L720 220L740 128Z" fill="#F5FEFF"/>
+  <path d="M76 398C204 330 344 318 506 352C648 382 773 400 944 338C1012 313 1065 303 1130 306V480H76V398Z" fill="#081017" opacity="0.55"/>
+  <text x="76" y="162" fill="#F8FBFC" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="76" font-weight="760">NorthStar</text>
+  <text x="80" y="214" fill="#B9CED8" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="28" font-weight="440">A native macOS WebKit browser with tabs and per-tab network modes.</text>
+  <rect x="80" y="256" width="126" height="36" rx="18" fill="#F8FBFC" fill-opacity="0.1" stroke="#F8FBFC" stroke-opacity="0.16"/>
+  <text x="104" y="280" fill="#DDF9FF" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="650">WEBKIT</text>
+  <rect x="220" y="256" width="174" height="36" rx="18" fill="#F8FBFC" fill-opacity="0.1" stroke="#F8FBFC" stroke-opacity="0.16"/>
+  <text x="244" y="280" fill="#DDF9FF" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="650">VERTICAL TABS</text>
+  <rect x="408" y="256" width="188" height="36" rx="18" fill="#F8FBFC" fill-opacity="0.1" stroke="#F8FBFC" stroke-opacity="0.16"/>
+  <text x="432" y="280" fill="#DDF9FF" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="15" font-weight="650">NETWORK MODES</text>
+</svg>

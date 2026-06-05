@@ -1,0 +1,157 @@
+<p align="center">
+  <img src="Resources/NorthStarBanner.svg" alt="NorthStar banner" width="900">
+</p>
+
+<p align="center">
+  <img alt="Platform" src="https://img.shields.io/badge/platform-macOS-2f6f8f">
+  <img alt="Swift" src="https://img.shields.io/badge/Swift-6.x-f05138">
+  <img alt="Engine" src="https://img.shields.io/badge/engine-WebKit-0b84ff">
+  <img alt="Status" src="https://img.shields.io/badge/status-prototype-8a63d2">
+</p>
+
+# NorthStar
+
+NorthStar is a small native macOS browser built with Swift, AppKit, and Apple's WebKit. It is meant to be fast to understand, easy to extend, and useful as a foundation for experimenting with browser UX, private sessions, proxy-backed browsing, and local development workflows.
+
+The first version keeps the surface intentionally focused: one window, vertical tabs, a smart address bar, browser navigation controls, and a per-tab network selector.
+
+## Highlights
+
+- Native macOS app bundle, no Electron runtime.
+- `WKWebView` rendering with AppKit window and menu integration.
+- Vertical tab sidebar with new tab, close tab, and tab switching.
+- Smart address bar that accepts URLs, localhost addresses, file URLs, or search text.
+- Per-tab network modes: System, Private, Tor SOCKS, and Localhost.
+- New-window handling opens links into a new NorthStar tab instead of losing context.
+- Build script that produces `Build/NorthStar.app`.
+
+## Network Modes
+
+| Mode | Behavior | Best for |
+| --- | --- | --- |
+| System | Uses the default macOS network path and persistent WebKit website data. | Everyday browsing and signed-in sessions. |
+| Private | Uses a non-persistent `WKWebsiteDataStore`. | Quick private sessions without keeping cookies/cache. |
+| Tor SOCKS | Uses non-persistent data and routes WebKit traffic through `127.0.0.1:9050` with failover disabled. | Browsing through a local Tor/SOCKS5 service. |
+| Localhost | Uses non-persistent data and blocks navigation outside local files, `localhost`, `127.*`, `0.0.0.0`, and `::1`. | Web development and testing local apps. |
+
+Tor SOCKS mode expects a local SOCKS5 proxy, such as Tor, to already be running on `127.0.0.1:9050`.
+
+When a tab's network mode changes, NorthStar recreates that tab's `WKWebView` with a new WebKit data store. The current URL is preserved when the target mode allows it, but back/forward history starts fresh for that tab.
+
+## Keyboard Shortcuts
+
+| Shortcut | Action |
+| --- | --- |
+| `Command-T` | New tab |
+| `Command-W` | Close tab |
+| `Shift-Command-W` | Close window |
+| `Command-L` | Focus address bar |
+| `Command-R` | Reload or stop loading |
+| `Command-[` | Back |
+| `Command-]` | Forward |
+| `Shift-Command-[` | Previous tab |
+| `Shift-Command-]` | Next tab |
+
+## Requirements
+
+- macOS 14 or newer.
+- Apple Command Line Tools with Swift available.
+- Xcode is optional for this SwiftPM-based prototype.
+
+Check your toolchain:
+
+```bash
+swift --version
+```
+
+## Build And Run
+
+Clone the repository:
+
+```bash
+git clone https://github.com/Zulut30/NorthStar.git
+cd NorthStar
+```
+
+Build the `.app` bundle:
+
+```bash
+./Scripts/build-app.sh
+```
+
+Open the app:
+
+```bash
+open Build/NorthStar.app
+```
+
+For a quick development run:
+
+```bash
+swift run NorthStar
+```
+
+## Project Structure
+
+```text
+NorthStar/
+├── Package.swift
+├── README.md
+├── Resources/
+│   ├── Info.plist
+│   └── NorthStarBanner.svg
+├── Scripts/
+│   └── build-app.sh
+└── Sources/
+    └── NorthStar/
+        └── main.swift
+```
+
+## Architecture
+
+NorthStar is currently a compact single-target SwiftPM app.
+
+```mermaid
+flowchart LR
+    AppDelegate["AppDelegate"] --> Window["BrowserWindowController"]
+    Window --> Controller["BrowserViewController"]
+    Controller --> Sidebar["Vertical tab sidebar"]
+    Controller --> Toolbar["Navigation toolbar"]
+    Controller --> Tabs["BrowserTab models"]
+    Tabs --> WebView["WKWebView"]
+    Tabs --> NetworkProfile["NetworkProfile"]
+    NetworkProfile --> DataStore["WKWebsiteDataStore"]
+    NetworkProfile --> Proxy["Network.ProxyConfiguration"]
+```
+
+Core pieces:
+
+- `BrowserViewController` owns the window UI, active tab state, navigation actions, and WebKit delegates.
+- `BrowserTab` wraps a `WKWebView` and observes title, URL, progress, loading, and history state.
+- `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
+- `NetworkPolicy` blocks disallowed URLs in Localhost mode.
+
+## Roadmap
+
+- Horizontal or compact tab layout option.
+- Bookmarks and history UI.
+- Downloads with progress.
+- Find in page.
+- Content blocking.
+- Per-site permissions.
+- Search engine picker.
+- Optional custom SOCKS/HTTP proxy settings.
+- App icon and signed release packaging.
+
+## Design References
+
+NorthStar is a fresh implementation. The following projects are useful references for product direction and browser UX patterns:
+
+- [nuance-dev/Web](https://github.com/nuance-dev/Web)
+- [the-ora/browser](https://github.com/the-ora/browser)
+- [nook-browser/Nook](https://github.com/nook-browser/Nook)
+- [browseros-ai/BrowserOS](https://github.com/browseros-ai/BrowserOS)
+
+## License
+
+No license has been selected yet. Add one before distributing or accepting outside contributions.
