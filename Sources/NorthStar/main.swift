@@ -2141,6 +2141,7 @@ private final class BrowserViewController: NSViewController {
                 detail: tab.profile.detail,
                 favicon: tab.faviconImage,
                 isActive: tab.id == activeTabID,
+                isFrozen: tab.isShowingFrozenPage,
                 isHorizontal: isHorizontal,
                 design: preferences.design
             )
@@ -2293,16 +2294,16 @@ private final class BrowserViewController: NSViewController {
             return
         }
 
-        let snapshot = await PageParser.snapshot(
+        let snapshot = await PageFreezer.snapshot(
             from: sourceTab.webView,
             fallbackURL: sourceTab.url ?? sourceTab.webView.url,
             fallbackTitle: sourceTab.displayTitle
         )
 
-        guard !snapshot.visibleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !snapshot.html.isEmpty else {
+        guard !snapshot.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             let alert = NSAlert()
             alert.messageText = "Не удалось заморозить страницу"
-            alert.informativeText = "На странице нет доступного текста для офлайн-снимка."
+            alert.informativeText = "Не удалось получить статичный HTML-снимок текущей страницы."
             alert.alertStyle = .informational
             if let window = view.window {
                 await alert.beginSheetModal(for: window)
@@ -3116,7 +3117,7 @@ private final class BrowserTab {
     private(set) var parserSnapshot: PageParseSnapshot?
     private(set) var readerSnapshot: ReaderSnapshot?
     private(set) var cssScrapeSnapshot: CssScrapeSnapshot?
-    private(set) var frozenSnapshot: PageParseSnapshot?
+    private(set) var frozenSnapshot: FrozenPageSnapshot?
     private var observations: [NSKeyValueObservation] = []
     private var faviconTask: Task<Void, Never>?
     private var faviconCacheKey: String?
@@ -3308,7 +3309,7 @@ private final class BrowserTab {
         )
     }
 
-    func loadFrozenPage(snapshot: PageParseSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
+    func loadFrozenPage(snapshot: FrozenPageSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
         isShowingHome = false
         isShowingSettings = false
         isShowingParser = false
@@ -3328,7 +3329,7 @@ private final class BrowserTab {
         notifyChanged()
         webView.loadHTMLString(
             FrozenPage.html(snapshot: snapshot, theme: theme, colorScheme: colorScheme, design: design),
-            baseURL: nil
+            baseURL: URL(string: snapshot.url)
         )
     }
 
@@ -3751,6 +3752,293 @@ private struct PageParseLink: Codable {
 private struct PageParseImage: Codable {
     var alt: String
     var src: String
+}
+
+private struct FrozenPageSnapshot: Codable {
+    var capturedAt: String
+    var url: String
+    var title: String
+    var html: String
+    var embeddedImages: Int
+    var externalImages: Int
+    var embeddedStylesheets: Int
+}
+
+@MainActor
+private enum PageFreezer {
+    static func snapshot(from webView: WKWebView, fallbackURL: URL?, fallbackTitle: String) async -> FrozenPageSnapshot {
+        do {
+            if let json = try await webView.evaluateJavaScript(freezeScript) as? String,
+               let data = json.data(using: .utf8) {
+                return try JSONDecoder().decode(FrozenPageSnapshot.self, from: data)
+            }
+        } catch {
+            return fallbackSnapshot(url: fallbackURL, title: fallbackTitle)
+        }
+
+        return fallbackSnapshot(url: fallbackURL, title: fallbackTitle)
+    }
+
+    private static func fallbackSnapshot(url: URL?, title: String) -> FrozenPageSnapshot {
+        let source = url?.absoluteString ?? ""
+        let safeTitle = title.isEmpty ? "Замороженная страница" : title
+        let html = snapshotFallbackHTML(title: safeTitle, source: source)
+        return FrozenPageSnapshot(
+            capturedAt: ISO8601DateFormatter().string(from: Date()),
+            url: source,
+            title: safeTitle,
+            html: html,
+            embeddedImages: 0,
+            externalImages: 0,
+            embeddedStylesheets: 0
+        )
+    }
+
+    static func snapshotFallbackHTML(title: String, source: String) -> String {
+        let safeTitle = title.isEmpty ? "Замороженная страница" : title
+        return """
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>\(frozenTitle): \(safeTitle.htmlEscaped)</title>
+        </head>
+        <body>
+          <h1>\(safeTitle.htmlEscaped)</h1>
+          <p>\(source.htmlEscaped)</p>
+          <p>Не удалось получить полный DOM-снимок страницы.</p>
+        </body>
+        </html>
+        """
+    }
+
+    private static let freezeScript = #"""
+    (async () => {
+      const MAX_IMAGE_BYTES = 4 * 1024 * 1024;
+      const MAX_TOTAL_IMAGE_BYTES = 36 * 1024 * 1024;
+      const MAX_IMAGES = 140;
+      const MAX_STYLESHEET_BYTES = 2 * 1024 * 1024;
+      let embeddedImages = 0;
+      let externalImages = 0;
+      let embeddedStylesheets = 0;
+      let totalImageBytes = 0;
+
+      const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const absolute = (value, base = document.baseURI) => {
+        const raw = String(value || "").trim();
+        if (!raw || /^(data:|blob:|about:|mailto:|tel:|javascript:|#)/i.test(raw)) return raw;
+        try { return new URL(raw, base).href; } catch (_) { return raw; }
+      };
+      const absolutizeSrcset = (value, base = document.baseURI) => {
+        return String(value || "")
+          .split(",")
+          .map((part) => {
+            const pieces = part.trim().split(/\s+/);
+            if (!pieces[0]) return "";
+            pieces[0] = absolute(pieces[0], base);
+            return pieces.join(" ");
+          })
+          .filter(Boolean)
+          .join(", ");
+      };
+      const absolutizeCSS = (css, baseURL) => {
+        return String(css || "").replace(/url\((['"]?)(?!data:|blob:|https?:|about:|#)([^'")]+)\1\)/gi, (_, quote, raw) => {
+          const resolved = absolute(raw, baseURL);
+          return `url(${quote || "\""}${resolved}${quote || "\""})`;
+        });
+      };
+      const toDataURL = async (url) => {
+        const response = await fetch(url, { credentials: "include", cache: "force-cache" });
+        if (!response.ok) return null;
+        const blob = await response.blob();
+        if (!blob || blob.size <= 0 || blob.size > MAX_IMAGE_BYTES) return null;
+        if (totalImageBytes + blob.size > MAX_TOTAL_IMAGE_BYTES) return null;
+        totalImageBytes += blob.size;
+        return await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(blob);
+        });
+      };
+
+      const clone = document.documentElement.cloneNode(true);
+      clone.setAttribute("data-northstar-frozen", "true");
+
+      const originalControls = Array.from(document.querySelectorAll("input, textarea, select, option"));
+      const clonedControls = Array.from(clone.querySelectorAll("input, textarea, select, option"));
+      originalControls.forEach((control, index) => {
+        const copy = clonedControls[index];
+        if (!copy) return;
+        const tag = control.tagName;
+        if (tag === "TEXTAREA") {
+          copy.textContent = control.value || "";
+        } else if (tag === "SELECT") {
+          Array.from(control.options || []).forEach((option, optionIndex) => {
+            const copiedOption = copy.options && copy.options[optionIndex];
+            if (!copiedOption) return;
+            if (option.selected) copiedOption.setAttribute("selected", "");
+            else copiedOption.removeAttribute("selected");
+          });
+        } else if (tag === "OPTION") {
+          if (control.selected) copy.setAttribute("selected", "");
+          else copy.removeAttribute("selected");
+        } else if (tag === "INPUT") {
+          const type = String(control.type || "").toLowerCase();
+          if (type === "checkbox" || type === "radio") {
+            if (control.checked) copy.setAttribute("checked", "");
+            else copy.removeAttribute("checked");
+          } else if (type !== "file" && type !== "password") {
+            copy.setAttribute("value", control.value || "");
+          }
+        }
+      });
+
+      clone.querySelectorAll("*").forEach((element) => {
+        Array.from(element.attributes || []).forEach((attribute) => {
+          const name = attribute.name.toLowerCase();
+          if (name.startsWith("on")) element.removeAttribute(attribute.name);
+        });
+        ["href", "src", "poster", "action"].forEach((attribute) => {
+          if (element.hasAttribute(attribute)) {
+            element.setAttribute(attribute, absolute(element.getAttribute(attribute)));
+          }
+        });
+        ["srcset", "imagesrcset"].forEach((attribute) => {
+          if (element.hasAttribute(attribute)) {
+            element.setAttribute(attribute, absolutizeSrcset(element.getAttribute(attribute)));
+          }
+        });
+      });
+
+      clone.querySelectorAll("script").forEach((element) => element.remove());
+      clone.querySelectorAll("meta[http-equiv]").forEach((element) => {
+        if ((element.getAttribute("http-equiv") || "").toLowerCase() === "refresh") {
+          element.remove();
+        }
+      });
+      clone.querySelectorAll("iframe, frame, object, embed").forEach((element) => {
+        const placeholder = document.createElement("div");
+        placeholder.setAttribute("data-frozen-frame", "true");
+        placeholder.textContent = `Замороженный внешний фрейм: ${element.getAttribute("src") || element.getAttribute("data") || ""}`;
+        element.replaceWith(placeholder);
+      });
+      clone.querySelectorAll("form").forEach((form) => {
+        form.setAttribute("data-frozen-form", "true");
+        if (form.getAttribute("action")) {
+          form.setAttribute("data-original-action", form.getAttribute("action"));
+        }
+        form.removeAttribute("action");
+      });
+      clone.querySelectorAll("button:not([type]), button[type='submit'], input[type='submit'], input[type='image']").forEach((button) => {
+        button.setAttribute("type", "button");
+      });
+      clone.querySelectorAll("video, audio").forEach((media) => {
+        media.removeAttribute("autoplay");
+        media.setAttribute("controls", "");
+        try { media.pause(); } catch (_) {}
+      });
+
+      const head = clone.querySelector("head") || (() => {
+        const created = document.createElement("head");
+        clone.insertBefore(created, clone.firstChild);
+        return created;
+      })();
+      head.querySelectorAll("base").forEach((element) => element.remove());
+      const base = document.createElement("base");
+      base.setAttribute("href", location.href);
+      head.insertBefore(base, head.firstChild);
+
+      const charset = document.createElement("meta");
+      charset.setAttribute("charset", "utf-8");
+      head.insertBefore(charset, head.firstChild);
+
+      const csp = document.createElement("meta");
+      csp.setAttribute("http-equiv", "Content-Security-Policy");
+      csp.setAttribute("content", "script-src 'none'; object-src 'none'; form-action 'none'; base-uri 'self'");
+      head.appendChild(csp);
+
+      const frozenStyle = document.createElement("style");
+      frozenStyle.textContent = `
+        [data-frozen-frame] {
+          min-height: 72px;
+          display: grid;
+          place-items: center;
+          border: 1px dashed rgba(128,128,128,.55);
+          border-radius: 8px;
+          color: inherit;
+          opacity: .72;
+          font: 13px -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+        }
+        form[data-frozen-form] {
+          pointer-events: none;
+        }
+      `;
+      head.appendChild(frozenStyle);
+
+      const stylesheetLinks = Array.from(clone.querySelectorAll("link[rel~='stylesheet'][href]")).slice(0, 36);
+      for (const link of stylesheetLinks) {
+        const href = absolute(link.getAttribute("href"));
+        try {
+          const response = await fetch(href, { credentials: "include", cache: "force-cache" });
+          if (!response.ok) throw new Error("stylesheet fetch failed");
+          let css = await response.text();
+          if (css.length > MAX_STYLESHEET_BYTES) throw new Error("stylesheet too large");
+          css = absolutizeCSS(css, href);
+          const style = document.createElement("style");
+          style.setAttribute("data-frozen-stylesheet", href);
+          style.textContent = css;
+          link.replaceWith(style);
+          embeddedStylesheets += 1;
+        } catch (_) {
+          link.setAttribute("href", href);
+        }
+      }
+
+      const originalImages = Array.from(document.images).slice(0, MAX_IMAGES);
+      const clonedImages = Array.from(clone.querySelectorAll("img")).slice(0, MAX_IMAGES);
+      for (let index = 0; index < clonedImages.length; index += 1) {
+        const original = originalImages[index];
+        const copy = clonedImages[index];
+        if (!copy) continue;
+        const rawSource = (original && (original.currentSrc || original.src)) || copy.getAttribute("src") || "";
+        const source = absolute(rawSource);
+        if (!source) continue;
+        if (source.startsWith("data:")) {
+          copy.setAttribute("src", source);
+          copy.removeAttribute("srcset");
+          continue;
+        }
+        try {
+          const dataURL = await toDataURL(source);
+          if (dataURL) {
+            copy.setAttribute("src", dataURL);
+            copy.removeAttribute("srcset");
+            copy.removeAttribute("sizes");
+            copy.closest("picture")?.querySelectorAll("source").forEach((sourceElement) => sourceElement.remove());
+            embeddedImages += 1;
+          } else {
+            copy.setAttribute("src", source);
+            externalImages += 1;
+          }
+        } catch (_) {
+          copy.setAttribute("src", source);
+          externalImages += 1;
+        }
+      }
+
+      return JSON.stringify({
+        capturedAt: new Date().toISOString(),
+        url: location.href,
+        title: clean(document.title) || clean(location.hostname),
+        html: "<!doctype html>\n" + clone.outerHTML,
+        embeddedImages,
+        externalImages,
+        embeddedStylesheets
+      });
+    })()
+    """#
 }
 
 @MainActor
@@ -6310,9 +6598,12 @@ private enum AdBlocker {
             ".nitro-ad",
             ".nitro-ad-container",
             "[aria-label='Advertisement']",
+            "[class~='ad']",
+            "[class~='ads']",
             "[class*=' ad-']",
             "[class*=' ad_']",
-            "[class*=' ads']",
+            "[class*=' ads-']",
+            "[class*=' ads_']",
             "[class*='ad-container']",
             "[class*='ad-wrapper']",
             "[class*='ad_slot']",
@@ -6325,9 +6616,14 @@ private enum AdBlocker {
             "[data-ad-slot]",
             "[data-ad-unit]",
             "[data-adunit]",
-            "[id*='ad-']",
-            "[id*='ad_']",
-            "[id*='ads']",
+            "[id='ad']",
+            "[id='ads']",
+            "[id^='ad-']",
+            "[id^='ad_']",
+            "[id*='-ad-']",
+            "[id*='_ad_']",
+            "[id*='ads-']",
+            "[id*='ads_']",
             "[id*='advert']",
             "[id*='banner-ad']",
             "[id*='nitro']",
@@ -6403,7 +6699,7 @@ private enum AdBlocker {
           const selectorText = selectors.join(",");
           const largeTags = new Set(["BODY", "HTML", "MAIN", "NAV", "HEADER"]);
           const removableTags = new Set(["IFRAME", "IMG", "SCRIPT", "LINK", "SOURCE", "VIDEO", "INS"]);
-          const textValue = element => [
+          const metadataValue = element => [
             element.id,
             element.className,
             element.getAttribute && element.getAttribute("aria-label"),
@@ -6411,9 +6707,9 @@ private enum AdBlocker {
             element.getAttribute && element.getAttribute("href"),
             element.getAttribute && element.getAttribute("src"),
             element.getAttribute && element.getAttribute("srcset"),
-            element.getAttribute && element.getAttribute("style"),
-            element.textContent
+            element.getAttribute && element.getAttribute("style")
           ].join(" ").toLowerCase();
+          const visibleTextValue = element => String(element.textContent || "").replace(/\\s+/g, " ").trim().toLowerCase();
           const resourceValue = element => [
             element.id,
             element.className,
@@ -6426,8 +6722,13 @@ private enum AdBlocker {
             element.getAttribute && element.getAttribute("style")
           ].join(" ").toLowerCase();
           const hasAdSignal = element => {
-            const value = textValue(element);
-            return blockedFragments.some(fragment => value.includes(fragment)) || promoTextFragments.some(fragment => value.includes(fragment));
+            const metadata = metadataValue(element);
+            if (blockedFragments.some(fragment => metadata.includes(fragment))) return true;
+            const rect = element.getBoundingClientRect();
+            const looksLikeSmallPromo = rect.width < window.innerWidth * 0.86 && rect.height < window.innerHeight * 0.56;
+            if (!looksLikeSmallPromo) return false;
+            const text = visibleTextValue(element);
+            return text.length > 0 && text.length < 520 && promoTextFragments.some(fragment => text.includes(fragment));
           };
           const hasResourceAdSignal = element => {
             const value = resourceValue(element);
@@ -7380,6 +7681,7 @@ private final class TabRowView: NSView {
     private let detailField = NSTextField(labelWithString: "")
     private let closeButton = IconButton(symbolName: "xmark", tooltip: "Закрыть вкладку", width: 20, height: 20)
     private var isActive = false
+    private var isFrozen = false
     private var isHovered = false
     private var isHorizontalLayout = false
     private var heightConstraint: NSLayoutConstraint?
@@ -7475,12 +7777,13 @@ private final class TabRowView: NSView {
         nil
     }
 
-    func configure(title: String, detail: String, favicon: NSImage?, isActive: Bool, isHorizontal: Bool, design: DesignMode) {
+    func configure(title: String, detail: String, favicon: NSImage?, isActive: Bool, isFrozen: Bool, isHorizontal: Bool, design: DesignMode) {
         titleField.stringValue = title
         detailField.stringValue = detail
         detailField.isHidden = true
-        setFavicon(favicon)
         self.isActive = isActive
+        self.isFrozen = isFrozen
+        setFavicon(favicon)
         isHorizontalLayout = isHorizontal
         layer?.cornerRadius = design.rowCornerRadius
         heightConstraint?.constant = isHorizontal ? design.horizontalTabRowHeight : design.verticalTabRowHeight
@@ -7541,32 +7844,39 @@ private final class TabRowView: NSView {
     }
 
     private func updateStyle() {
-        let accent = NSColor.controlAccentColor
-        titleField.font = .systemFont(ofSize: isHorizontalLayout ? 12.2 : 12.8, weight: isActive ? .semibold : .medium)
-        titleField.textColor = isActive ? .labelColor : .secondaryLabelColor
+        let accent = isFrozen ? NSColor.systemBlue : NSColor.controlAccentColor
+        let frozenBlue = NSColor.systemBlue
+        let highlighted = isActive || isFrozen
+        titleField.font = .systemFont(ofSize: isHorizontalLayout ? 12.2 : 12.8, weight: highlighted ? .semibold : .medium)
+        titleField.textColor = highlighted ? .labelColor : .secondaryLabelColor
         detailField.textColor = .secondaryLabelColor
+        if faviconImageView.image?.isTemplate == true {
+            faviconImageView.contentTintColor = isFrozen ? frozenBlue : (isActive ? .labelColor : .tertiaryLabelColor)
+        }
 
         if isHorizontalLayout {
             let activeColor = NSColor.controlBackgroundColor.withAlphaComponent(0.52)
             let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.2)
-            layer?.backgroundColor = isActive
-                ? activeColor.cgColor
-                : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor)
-            layer?.borderWidth = isActive ? 1 : 0
-            layer?.borderColor = isActive
-                ? accent.withAlphaComponent(0.34).cgColor
+            let frozenColor = frozenBlue.withAlphaComponent(isActive ? 0.26 : (isHovered ? 0.2 : 0.14))
+            layer?.backgroundColor = isFrozen
+                ? frozenColor.cgColor
+                : (isActive ? activeColor.cgColor : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor))
+            layer?.borderWidth = highlighted ? 1 : 0
+            layer?.borderColor = highlighted
+                ? accent.withAlphaComponent(isFrozen ? 0.46 : 0.34).cgColor
                 : NSColor.separatorColor.withAlphaComponent(0.16).cgColor
         } else {
             let activeColor = accent.withAlphaComponent(0.12)
             let hoverColor = NSColor.controlBackgroundColor.withAlphaComponent(0.22)
-            layer?.backgroundColor = isActive
-                ? activeColor.cgColor
-                : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor)
-            layer?.borderWidth = isActive ? 1 : 0
-            layer?.borderColor = isActive
-                ? accent.withAlphaComponent(0.26).cgColor
+            let frozenColor = frozenBlue.withAlphaComponent(isActive ? 0.22 : (isHovered ? 0.17 : 0.12))
+            layer?.backgroundColor = isFrozen
+                ? frozenColor.cgColor
+                : (isActive ? activeColor.cgColor : (isHovered ? hoverColor.cgColor : NSColor.clear.cgColor))
+            layer?.borderWidth = highlighted ? 1 : 0
+            layer?.borderColor = highlighted
+                ? accent.withAlphaComponent(isFrozen ? 0.42 : 0.26).cgColor
                 : NSColor.clear.cgColor
-            indicatorView.layer?.backgroundColor = isActive
+            indicatorView.layer?.backgroundColor = highlighted
                 ? accent.cgColor
                 : NSColor.clear.cgColor
         }
@@ -8465,156 +8775,14 @@ private enum ParserPage {
 }
 
 
+@MainActor
 private enum FrozenPage {
-    static func html(snapshot: PageParseSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
-        let colors = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
-        let title = snapshot.title.isEmpty ? "Замороженная страница" : snapshot.title
-        let source = snapshot.url.isEmpty ? "Источник не определён" : snapshot.url
-        let description = snapshot.description.isEmpty ? "" : "<p class=\"excerpt\">\(snapshot.description.htmlEscaped)</p>"
-        let captured = snapshot.capturedAt.isEmpty ? "" : snapshot.capturedAt
-        let paragraphs = readableParagraphs(from: snapshot.visibleText)
-        let content = paragraphs.isEmpty
-            ? #"<p class="empty">В снимке нет доступного текста.</p>"#
-            : paragraphs.map { "<p>\($0.htmlEscaped)</p>" }.joined(separator: "\n")
-        let linkItems = snapshot.links.prefix(24).map { link in
-            let label = link.text.isEmpty ? link.href : link.text
-            return "<li><a href=\"\(link.href.htmlEscaped)\">\(label.htmlEscaped)</a></li>"
-        }.joined()
-        let links = linkItems.isEmpty
-            ? ""
-            : """
-            <section>
-              <h2>Ссылки из снимка</h2>
-              <ul>\(linkItems)</ul>
-            </section>
-            """
-
-        return """
-        <!doctype html>
-        <html lang="ru">
-        <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1">
-          <base target="_blank">
-          <title>\(frozenTitle): \(title.htmlEscaped)</title>
-          <style>
-            :root {
-              color-scheme: \(colors.colorScheme);
-              --bg: \(colors.background);
-              --panel: \(colors.panel);
-              --text: \(colors.text);
-              --muted: \(colors.muted);
-              --line: \(colors.line);
-              --accent: \(colors.accent);
-              --shadow: \(colors.shadow);
-              --radius: \(design.radius);
-            }
-            * { box-sizing: border-box; }
-            body {
-              margin: 0;
-              min-height: 100vh;
-              background: var(--bg);
-              color: var(--text);
-              font: 17px/1.68 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
-            }
-            main {
-              width: min(760px, calc(100vw - 44px));
-              margin: 0 auto;
-              padding: 44px 0 76px;
-            }
-            header {
-              display: grid;
-              gap: 12px;
-              margin-bottom: 24px;
-              padding: 20px;
-              border: 1px solid var(--line);
-              border-radius: var(--radius);
-              background: var(--panel);
-              box-shadow: 0 18px 44px var(--shadow);
-            }
-            h1, h2, p { margin: 0; }
-            h1 { font-size: clamp(32px, 5vw, 54px); line-height: 1.05; letter-spacing: 0; }
-            h2 { font-size: 18px; margin-bottom: 10px; }
-            .kicker { color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; }
-            .source, .excerpt, .meta, .empty { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
-            article {
-              display: grid;
-              gap: 16px;
-              padding: 2px 2px 20px;
-            }
-            article p { font-size: 18px; }
-            section {
-              margin-top: 18px;
-              padding: 18px 20px;
-              border: 1px solid var(--line);
-              border-radius: var(--radius);
-              background: var(--panel);
-              box-shadow: 0 14px 34px var(--shadow);
-            }
-            ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; }
-            a { color: var(--accent); overflow-wrap: anywhere; }
-          </style>
-        </head>
-        <body>
-          <main>
-            <header>
-              <p class="kicker">\(frozenTitle)</p>
-              <h1>\(title.htmlEscaped)</h1>
-              \(description)
-              <p class="source">\(source.htmlEscaped)</p>
-              <p class="meta">Статичный снимок для чтения офлайн · \(captured.htmlEscaped)</p>
-            </header>
-            <article>
-              \(content)
-            </article>
-            \(links)
-          </main>
-        </body>
-        </html>
-        """
-    }
-
-    private static func readableParagraphs(from text: String) -> [String] {
-        let normalized = text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-
-        let chunks = normalized
-            .components(separatedBy: CharacterSet.newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-
-        if chunks.count >= 3 {
-            return Array(chunks.prefix(180))
+    static func html(snapshot: FrozenPageSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
+        guard !snapshot.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return PageFreezer.snapshotFallbackHTML(title: snapshot.title, source: snapshot.url)
         }
 
-        let sentences = normalized
-            .replacingOccurrences(of: ". ", with: ".\n")
-            .replacingOccurrences(of: "! ", with: "!\n")
-            .replacingOccurrences(of: "? ", with: "?\n")
-            .components(separatedBy: CharacterSet.newlines)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.count > 2 }
-
-        var paragraphs: [String] = []
-        var buffer: [String] = []
-        var bufferLength = 0
-
-        for sentence in sentences.prefix(360) {
-            buffer.append(sentence)
-            bufferLength += sentence.count
-            if bufferLength > 420 {
-                paragraphs.append(buffer.joined(separator: " "))
-                buffer.removeAll()
-                bufferLength = 0
-            }
-        }
-
-        if !buffer.isEmpty {
-            paragraphs.append(buffer.joined(separator: " "))
-        }
-
-        return Array(paragraphs.prefix(180))
+        return snapshot.html
     }
 }
 
