@@ -33,6 +33,8 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Private tabs are available from the toolbar or `Shift-Command-N` and avoid local history, download history, persistent cookies, and local performance URL samples.
 - Current-tab screenshots can be copied directly to the macOS clipboard from the toolbar.
 - Built-in currency converter using ExchangeRate-API, with toolbar access, visible-page price scanning, and right-click actions for selected prices.
+- Bookmarks with toolbar toggle, home-screen quick links, settings manager, and context menu (`⌘D`).
+- Reading mode that extracts article content into a clean, distraction-free view (`⇧⌥⌘R`).
 - Appearance controls include six color schemes, four interface designs, and five home-screen background styles.
 - Lightweight browser performance snapshot in Settings: tab count, loading tabs, app memory, average load time, and recent page timings.
 - Ad blocking with a compatibility-first default mode, plus an optional strict mode for heavier cleanup.
@@ -95,6 +97,9 @@ When a tab's network mode changes, NorthStar recreates that tab's `WKWebView` wi
 | `Command-R` | Reload or stop loading |
 | `Shift-Command-R` | Hard refresh without cache |
 | `Option-Command-P` | Open current-page parser report |
+| `Shift-Option-Command-R` | Reading mode |
+| `Command-D` | Add/remove bookmark |
+| `Command-B` | Show bookmarks |
 | `Option-Command-S` | Copy current-tab screenshot |
 | `Command-[` | Back |
 | `Command-]` | Forward |
@@ -190,7 +195,6 @@ Core pieces:
 
 ## Roadmap
 
-- Bookmarks UI.
 - Find in page.
 - Per-site permissions.
 - Optional custom SOCKS/HTTP proxy settings.

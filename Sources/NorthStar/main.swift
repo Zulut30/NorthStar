@@ -8,6 +8,7 @@ import WebKit
 private let appName = "NorthStar"
 private let settingsTitle = "Настройки"
 private let parserTitle = "Парсер"
+private let readerTitle = "Чтение"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
@@ -146,6 +147,8 @@ private final class BrowserViewController: NSViewController {
     private let backButton = IconButton(symbolName: "chevron.left", tooltip: "Назад")
     private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Вперёд")
     private let homeButton = IconButton(symbolName: "house", tooltip: "Домой")
+    private let bookmarkButton = IconButton(symbolName: "star", tooltip: "Добавить в закладки")
+    private let readerButton = IconButton(symbolName: "text.rectangle.page", tooltip: "Режим чтения")
     private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
     private let hardReloadButton = ToolbarActionButton(symbolName: "arrow.clockwise.circle", title: "Без кэша", tooltip: "Жёсткое обновление без кэша", width: 94)
     private let privateButton = ToolbarActionButton(symbolName: "eye.slash", title: "Приватно", tooltip: "Новая приватная вкладка", width: 92)
@@ -338,6 +341,8 @@ private final class BrowserViewController: NSViewController {
             showSettings(in: tab)
         } else if tab.isShowingParser, let snapshot = tab.parserSnapshot {
             tab.loadParserPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if tab.isShowingReader, let snapshot = tab.readerSnapshot {
+            tab.loadReaderPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else {
             tab.webView.reload()
         }
@@ -352,6 +357,8 @@ private final class BrowserViewController: NSViewController {
             showSettings(in: tab)
         } else if tab.isShowingParser, let snapshot = tab.parserSnapshot {
             tab.loadParserPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if tab.isShowingReader, let snapshot = tab.readerSnapshot {
+            tab.loadReaderPage(snapshot: snapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else {
             tab.webView.stopLoading()
             tab.webView.reloadFromOrigin()
@@ -372,6 +379,64 @@ private final class BrowserViewController: NSViewController {
         Task { @MainActor in
             await openParserTab(from: tab)
         }
+    }
+
+    @objc func openReaderCommand(_ sender: Any?) {
+        guard let tab = activeTab else { return }
+        Task { @MainActor in
+            await openReaderTab(from: tab)
+        }
+    }
+
+    @objc func toggleBookmarkCommand(_ sender: Any?) {
+        guard let tab = activeTab, let pageURL = currentPageURL(for: tab) else {
+            NSSound.beep()
+            return
+        }
+
+        _ = BookmarkStore.shared.toggle(url: pageURL, title: tab.displayTitle)
+        syncBookmarkButton(for: tab)
+        refreshSettingsTabs()
+        tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
+    }
+
+    @objc func showBookmarksCommand(_ sender: Any?) {
+        if let existingTab = tabs.first(where: \.isShowingSettings) {
+            activeTabID = existingTab.id
+            showActiveTab()
+            showSettings(in: existingTab, activeSection: .bookmarks)
+            renderTabs()
+            syncToolbar()
+            return
+        }
+
+        openSettingsTab()
+        if let tab = tabs.first(where: \.isShowingSettings) {
+            showSettings(in: tab, activeSection: .bookmarks)
+            syncToolbar()
+        }
+    }
+
+    private func currentPageURL(for tab: BrowserTab) -> URL? {
+        guard tab.isBrowsablePage else { return nil }
+        return tab.url ?? tab.webView.url
+    }
+
+    private func syncBookmarkButton(for tab: BrowserTab) {
+        guard let pageURL = currentPageURL(for: tab) else {
+            bookmarkButton.image = NSImage(systemSymbolName: "star", accessibilityDescription: "Добавить в закладки")
+            bookmarkButton.toolTip = "Добавить в закладки"
+            bookmarkButton.isEnabled = false
+            return
+        }
+
+        let isBookmarked = BookmarkStore.shared.isBookmarked(url: pageURL)
+        bookmarkButton.image = NSImage(
+            systemSymbolName: isBookmarked ? "star.fill" : "star",
+            accessibilityDescription: isBookmarked ? "Удалить из закладок" : "Добавить в закладки"
+        )
+        bookmarkButton.toolTip = isBookmarked ? "Удалить из закладок" : "Добавить в закладки"
+        bookmarkButton.isEnabled = true
     }
 
     func openExternalURL(_ url: URL) {
@@ -825,6 +890,10 @@ private final class BrowserViewController: NSViewController {
         forwardButton.action = #selector(goForwardCommand(_:))
         homeButton.target = self
         homeButton.action = #selector(goHome(_:))
+        bookmarkButton.target = self
+        bookmarkButton.action = #selector(toggleBookmarkCommand(_:))
+        readerButton.target = self
+        readerButton.action = #selector(openReaderCommand(_:))
         reloadButton.target = self
         reloadButton.action = #selector(reloadCommand(_:))
         hardReloadButton.target = self
@@ -843,7 +912,7 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(webContainerView)
 
-        [brandTitleField, backButton, forwardButton, homeButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
+        [brandTitleField, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, parserButton, reloadButton, hardReloadButton, privateButton, screenshotButton, currencyButton, settingsButton, progressIndicator].forEach {
             toolbarView.addSubview($0)
         }
 
@@ -874,6 +943,12 @@ private final class BrowserViewController: NSViewController {
             homeButton.leadingAnchor.constraint(equalTo: forwardButton.trailingAnchor, constant: 8),
             homeButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
+            bookmarkButton.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 8),
+            bookmarkButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
+            readerButton.leadingAnchor.constraint(equalTo: bookmarkButton.trailingAnchor, constant: 8),
+            readerButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
+
             settingsButton.trailingAnchor.constraint(equalTo: toolbarView.trailingAnchor, constant: -12),
             settingsButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
@@ -895,7 +970,7 @@ private final class BrowserViewController: NSViewController {
             parserButton.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -8),
             parserButton.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
 
-            addressField.leadingAnchor.constraint(equalTo: homeButton.trailingAnchor, constant: 12),
+            addressField.leadingAnchor.constraint(equalTo: readerButton.trailingAnchor, constant: 12),
             addressField.trailingAnchor.constraint(equalTo: parserButton.leadingAnchor, constant: -12),
             addressField.centerYAnchor.constraint(equalTo: backButton.centerYAnchor),
             addressField.heightAnchor.constraint(equalToConstant: 30),
@@ -1106,7 +1181,9 @@ private final class BrowserViewController: NSViewController {
         let wasShowingSettings = oldTab.isShowingSettings
         let wasShowingParser = oldTab.isShowingParser
         let parserSnapshot = oldTab.parserSnapshot
-        let targetURL = oldTab.isShowingHome || oldTab.isShowingSettings || oldTab.isShowingParser ? nil : oldTab.url ?? oldTab.webView.url
+        let wasShowingReader = oldTab.isShowingReader
+        let readerSnapshot = oldTab.readerSnapshot
+        let targetURL = oldTab.isInternalPage ? nil : oldTab.url ?? oldTab.webView.url
         let newTab = makeTab(profile: profile)
 
         oldTab.close()
@@ -1125,6 +1202,8 @@ private final class BrowserViewController: NSViewController {
             showSettings(in: newTab)
         } else if wasShowingParser, let parserSnapshot {
             newTab.loadParserPage(snapshot: parserSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
+        } else if wasShowingReader, let readerSnapshot {
+            newTab.loadReaderPage(snapshot: readerSnapshot, theme: preferences.theme, colorScheme: preferences.colorScheme, design: preferences.design)
         } else if let targetURL, NetworkPolicy.allows(targetURL, profile: profile) {
             load(targetURL, in: newTab)
         } else {
@@ -1244,7 +1323,8 @@ private final class BrowserViewController: NSViewController {
             colorScheme: preferences.colorScheme,
             design: preferences.design,
             homeBackground: preferences.homeBackground,
-            recentHistory: BrowserHistoryStore.shared.entries
+            recentHistory: BrowserHistoryStore.shared.entries,
+            bookmarks: BookmarkStore.shared.entries
         )
     }
 
@@ -1267,8 +1347,38 @@ private final class BrowserViewController: NSViewController {
         showSettings(in: tab)
     }
 
+    private func openReaderTab(from sourceTab: BrowserTab) async {
+        guard sourceTab.isBrowsablePage else { NSSound.beep(); return }
+        let snapshot = await ArticleReader.snapshot(from: sourceTab.webView, fallbackURL: sourceTab.url ?? sourceTab.webView.url, fallbackTitle: sourceTab.displayTitle)
+        guard snapshot.hasContent else {
+            let alert = NSAlert()
+            alert.messageText = "Режим чтения недоступен"
+            alert.informativeText = "На этой странице не удалось выделить основной текст статьи."
+            alert.alertStyle = .informational
+            if let window = view.window {
+                await alert.beginSheetModal(for: window)
+            } else {
+                alert.runModal()
+            }
+            return
+        }
+
+        let tab = makeTab(profile: sourceTab.profile)
+        tabs.append(tab)
+        activeTabID = tab.id
+        showActiveTab()
+        renderTabs()
+        tab.loadReaderPage(
+            snapshot: snapshot,
+            theme: preferences.theme,
+            colorScheme: preferences.colorScheme,
+            design: preferences.design
+        )
+        syncToolbar()
+    }
+
     private func openParserTab(from sourceTab: BrowserTab) async {
-        guard !sourceTab.isShowingHome && !sourceTab.isShowingSettings && !sourceTab.isShowingParser else {
+        guard sourceTab.isBrowsablePage else {
             NSSound.beep()
             return
         }
@@ -1297,6 +1407,7 @@ private final class BrowserViewController: NSViewController {
             preferences: preferences,
             history: BrowserHistoryStore.shared.entries,
             downloads: DownloadHistoryStore.shared.entries,
+            bookmarks: BookmarkStore.shared.entries,
             performance: PerformanceMonitor.shared.snapshot(
                 activeTabs: tabs.count,
                 loadingTabs: tabs.filter { $0.webView.isLoading }.count
@@ -1467,6 +1578,17 @@ private final class BrowserViewController: NSViewController {
         case "clear-history":
             BrowserHistoryStore.shared.clear()
             showSettings(in: tab, activeSection: .history)
+        case "clear-bookmarks":
+            BookmarkStore.shared.clear()
+            tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
+            showSettings(in: tab, activeSection: .bookmarks)
+        case "remove-bookmark":
+            if let rawID = queryItems.first(where: { $0.name == "id" })?.value,
+               let id = UUID(uuidString: rawID) {
+                BookmarkStore.shared.remove(id: id)
+                tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
+            }
+            showSettings(in: tab, activeSection: .bookmarks)
         case "clear-downloads":
             DownloadHistoryStore.shared.clear()
             showSettings(in: tab, activeSection: .downloads)
@@ -1503,6 +1625,8 @@ private final class BrowserViewController: NSViewController {
             hardReloadButton.isEnabled = false
             screenshotButton.isEnabled = false
             parserButton.isEnabled = false
+            readerButton.isEnabled = false
+            bookmarkButton.isEnabled = false
             addressField.stringValue = ""
             progressIndicator.isHidden = true
             return
@@ -1513,7 +1637,9 @@ private final class BrowserViewController: NSViewController {
         reloadButton.isEnabled = true
         hardReloadButton.isEnabled = true
         screenshotButton.isEnabled = !tab.webView.bounds.isEmpty
-        parserButton.isEnabled = !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser
+        parserButton.isEnabled = tab.isBrowsablePage
+        readerButton.isEnabled = tab.isBrowsablePage
+        syncBookmarkButton(for: tab)
 
         let reloadSymbol = tab.webView.isLoading ? "xmark" : "arrow.clockwise"
         reloadButton.image = NSImage(systemSymbolName: reloadSymbol, accessibilityDescription: tab.webView.isLoading ? "Остановить" : "Обновить")
@@ -1526,13 +1652,15 @@ private final class BrowserViewController: NSViewController {
                 addressField.stringValue = "northstar://settings"
             } else if tab.isShowingParser {
                 addressField.stringValue = "northstar://parser"
+            } else if tab.isShowingReader {
+                addressField.stringValue = "northstar://reader"
             } else {
                 addressField.stringValue = tab.url?.absoluteString ?? tab.webView.url?.absoluteString ?? ""
             }
         }
 
         progressIndicator.doubleValue = tab.progress
-        progressIndicator.isHidden = tab.isShowingHome || tab.isShowingSettings || tab.isShowingParser || !tab.webView.isLoading || tab.progress >= 1
+        progressIndicator.isHidden = tab.isInternalPage || !tab.webView.isLoading || tab.progress >= 1
 
         if let profileIndex = NetworkProfile.allCases.firstIndex(of: tab.profile) {
             networkPopup.selectItem(at: profileIndex)
@@ -1550,7 +1678,7 @@ private final class BrowserViewController: NSViewController {
     }
 
     private func shouldRecordLocalActivity(for tab: BrowserTab) -> Bool {
-        !tab.profile.isPrivateMode && !tab.isShowingHome && !tab.isShowingSettings && !tab.isShowingParser
+        !tab.profile.isPrivateMode && tab.isBrowsablePage
     }
 
     private func tab(for webView: WKWebView) -> BrowserTab? {
@@ -1573,6 +1701,12 @@ private final class BrowserViewController: NSViewController {
             menu.addItem(.separator())
         }
 
+        if let tab = tab(for: webView), tab.isBrowsablePage, let pageURL = tab.url ?? webView.url {
+            let isBookmarked = BookmarkStore.shared.isBookmarked(url: pageURL)
+            let bookmarkItem = NSMenuItem(title: isBookmarked ? "Удалить из закладок" : "Добавить в закладки", action: #selector(contextToggleBookmarkCommand(_:)), keyEquivalent: "d")
+            bookmarkItem.target = self; bookmarkItem.representedObject = webView; menu.addItem(bookmarkItem)
+        }
+
         let item = NSMenuItem(
             title: "Конвертировать выделенную цену",
             action: #selector(convertSelectionCurrencyCommand(_:)),
@@ -1590,6 +1724,12 @@ private final class BrowserViewController: NSViewController {
         scanItem.target = self
         scanItem.representedObject = webView
         menu.addItem(scanItem)
+    }
+
+    @objc private func contextToggleBookmarkCommand(_ sender: NSMenuItem) {
+        guard let webView = sender.representedObject as? WKWebView, let tab = tab(for: webView), let pageURL = currentPageURL(for: tab) else { NSSound.beep(); return }
+        _ = BookmarkStore.shared.toggle(url: pageURL, title: tab.displayTitle)
+        syncBookmarkButton(for: tab); refreshSettingsTabs(); tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
     }
 
     private func showBlockedURL(_ url: URL, profile: NetworkProfile) {
@@ -1973,10 +2113,20 @@ private final class BrowserTab {
     private(set) var isShowingHome = true
     private(set) var isShowingSettings = false
     private(set) var isShowingParser = false
+    private(set) var isShowingReader = false
     private(set) var parserSnapshot: PageParseSnapshot?
+    private(set) var readerSnapshot: ReaderSnapshot?
     private var observations: [NSKeyValueObservation] = []
     private var faviconTask: Task<Void, Never>?
     private var faviconCacheKey: String?
+
+    var isInternalPage: Bool {
+        isShowingHome || isShowingSettings || isShowingParser || isShowingReader
+    }
+
+    var isBrowsablePage: Bool {
+        !isInternalPage
+    }
 
     var displayTitle: String {
         if isShowingSettings {
@@ -1985,6 +2135,10 @@ private final class BrowserTab {
 
         if isShowingParser {
             return parserTitle
+        }
+
+        if isShowingReader {
+            return readerTitle
         }
 
         if isShowingHome {
@@ -2011,11 +2165,13 @@ private final class BrowserTab {
         bindWebViewState()
     }
 
-    func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry]) {
+    func loadHomePage(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry]) {
         isShowingHome = true
         isShowingSettings = false
         isShowingParser = false
+        isShowingReader = false
         parserSnapshot = nil
+        readerSnapshot = nil
         title = appName
         url = nil
         progress = 1
@@ -2025,16 +2181,18 @@ private final class BrowserTab {
         faviconImage = NSImage(systemSymbolName: homeSymbol, accessibilityDescription: appName)
         notifyChanged()
         webView.loadHTMLString(
-            HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory),
+            HomePage.html(searchEngine: searchEngine, searchRegion: searchRegion, searchLanguage: searchLanguage, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground, recentHistory: recentHistory, bookmarks: bookmarks),
             baseURL: nil
         )
     }
 
-    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) {
+    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], bookmarks: [BookmarkEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) {
         isShowingHome = false
         isShowingSettings = true
         isShowingParser = false
+        isShowingReader = false
         parserSnapshot = nil
+        readerSnapshot = nil
         title = settingsTitle
         url = nil
         progress = 1
@@ -2043,7 +2201,7 @@ private final class BrowserTab {
         faviconImage = NSImage(systemSymbolName: "gearshape", accessibilityDescription: settingsTitle)
         notifyChanged()
         webView.loadHTMLString(
-            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, performance: performance, theme: theme, activeSection: activeSection, defaultAppStatus: defaultAppStatus),
+            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, bookmarks: bookmarks, performance: performance, theme: theme, activeSection: activeSection, defaultAppStatus: defaultAppStatus),
             baseURL: nil
         )
     }
@@ -2052,7 +2210,9 @@ private final class BrowserTab {
         isShowingHome = false
         isShowingSettings = false
         isShowingParser = true
+        isShowingReader = false
         parserSnapshot = snapshot
+        readerSnapshot = nil
         title = parserTitle
         url = nil
         progress = 1
@@ -2066,11 +2226,33 @@ private final class BrowserTab {
         )
     }
 
+    func loadReaderPage(snapshot: ReaderSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
+        isShowingHome = false
+        isShowingSettings = false
+        isShowingParser = false
+        isShowingReader = true
+        parserSnapshot = nil
+        readerSnapshot = snapshot
+        title = snapshot.title.isEmpty ? readerTitle : snapshot.title
+        url = nil
+        progress = 1
+        faviconTask?.cancel()
+        faviconCacheKey = nil
+        faviconImage = NSImage(systemSymbolName: "text.rectangle.page", accessibilityDescription: readerTitle)
+        notifyChanged()
+        webView.loadHTMLString(
+            ReaderPage.html(snapshot: snapshot, theme: theme, colorScheme: colorScheme, design: design),
+            baseURL: nil
+        )
+    }
+
     func load(_ url: URL) {
         isShowingHome = false
         isShowingSettings = false
         isShowingParser = false
+        isShowingReader = false
         parserSnapshot = nil
+        readerSnapshot = nil
         self.url = url
         title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Загрузка"
         progress = 0
@@ -2097,6 +2279,9 @@ private final class BrowserTab {
         } else if isShowingParser {
             title = parserTitle
             progress = webView.isLoading ? webView.estimatedProgress : 1
+        } else if isShowingReader {
+            title = readerSnapshot?.title.isEmpty == false ? readerSnapshot!.title : readerTitle
+            progress = webView.isLoading ? webView.estimatedProgress : 1
         } else {
             url = webView.url ?? url
             title = Self.normalizedTitle(webView.title) ?? Self.normalizedTitle(url?.host(percentEncoded: false)) ?? "Новая вкладка"
@@ -2108,7 +2293,7 @@ private final class BrowserTab {
     }
 
     func refreshFavicon() {
-        guard !isShowingHome && !isShowingSettings,
+        guard isBrowsablePage,
               let pageURL = url ?? webView.url,
               let cacheKey = FaviconStore.cacheKey(for: pageURL, profile: profile) else {
             return
@@ -2149,7 +2334,7 @@ private final class BrowserTab {
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    if !self.isShowingHome && !self.isShowingSettings && !self.isShowingParser {
+                    if self.isBrowsablePage {
                         self.url = webView.url
                     }
                     self.notifyChanged()
@@ -2164,6 +2349,8 @@ private final class BrowserTab {
                         self.title = settingsTitle
                     } else if self.isShowingParser {
                         self.title = parserTitle
+                    } else if self.isShowingReader {
+                        self.title = self.readerSnapshot?.title.isEmpty == false ? self.readerSnapshot!.title : readerTitle
                     } else {
                         self.title = Self.normalizedTitle(webView.title) ?? self.title
                     }
@@ -2517,6 +2704,100 @@ private enum PageParser {
     """
 }
 
+
+private struct ReaderSnapshot: Codable {
+    var url: String
+    var title: String
+    var byline: String
+    var excerpt: String
+    var contentHTML: String
+    var wordCount: Int
+
+    var hasContent: Bool {
+        wordCount >= 120 || contentHTML.count >= 400
+    }
+}
+
+@MainActor
+private enum ArticleReader {
+    static func snapshot(from webView: WKWebView, fallbackURL: URL?, fallbackTitle: String) async -> ReaderSnapshot {
+        do {
+            if let json = try await webView.evaluateJavaScript(extractionScript) as? String,
+               let data = json.data(using: .utf8) {
+                return try JSONDecoder().decode(ReaderSnapshot.self, from: data)
+            }
+        } catch {
+            return fallbackSnapshot(url: fallbackURL, title: fallbackTitle)
+        }
+        return fallbackSnapshot(url: fallbackURL, title: fallbackTitle)
+    }
+
+    private static func fallbackSnapshot(url: URL?, title: String) -> ReaderSnapshot {
+        ReaderSnapshot(url: url?.absoluteString ?? "", title: title, byline: "", excerpt: "", contentHTML: "", wordCount: 0)
+    }
+
+    private static let extractionScript = """
+    (() => {
+      const clean = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
+      const cut = (value, limit) => {
+        const text = String(value || '');
+        return text.length > limit ? text.slice(0, limit) : text;
+      };
+      const unlikely = /comment|meta|footer|sidebar|banner|nav|menu|social|share|related|promo|advert|cookie|subscribe|newsletter/i;
+      const scoreNode = (node) => {
+        if (!node || node.nodeType !== 1) return -Infinity;
+        const tag = node.tagName.toLowerCase();
+        if (['script', 'style', 'noscript', 'svg', 'iframe', 'form', 'button', 'input'].includes(tag)) return -Infinity;
+        const idClass = `${node.id || ''} ${node.className || ''}`;
+        if (unlikely.test(idClass)) return -Infinity;
+        const text = clean(node.innerText || '');
+        const words = text ? text.split(/\\s+/).length : 0;
+        const paragraphs = node.querySelectorAll('p').length;
+        let score = words + paragraphs * 18;
+        if (tag === 'article') score += 120;
+        if (tag === 'main') score += 90;
+        if (node.getAttribute('role') === 'main') score += 80;
+        score -= node.querySelectorAll('a').length * 2;
+        score -= node.querySelectorAll('li').length;
+        return score;
+      };
+      const cloneContent = (node) => {
+        const clone = node.cloneNode(true);
+        clone.querySelectorAll('script, style, noscript, iframe, form, nav, aside, footer, header, button, svg').forEach(el => el.remove());
+        clone.querySelectorAll('[hidden], [aria-hidden="true"]').forEach(el => el.remove());
+        clone.querySelectorAll('img').forEach(img => {
+          const src = img.currentSrc || img.src || '';
+          if (!src) img.remove();
+          else { img.removeAttribute('srcset'); img.removeAttribute('sizes'); img.loading = 'lazy'; }
+        });
+        return clone.innerHTML;
+      };
+      const selectors = ['article', 'main', '[role="main"]', '.post-content', '.article-content', '.entry-content', '.story-body', '#content'];
+      let bestNode = null;
+      let bestScore = 0;
+      for (const selector of selectors) {
+        document.querySelectorAll(selector).forEach(node => {
+          const score = scoreNode(node);
+          if (score > bestScore) { bestScore = score; bestNode = node; }
+        });
+      }
+      if (!bestNode) {
+        document.body.querySelectorAll('section, div').forEach(node => {
+          const score = scoreNode(node);
+          if (score > bestScore) { bestScore = score; bestNode = node; }
+        });
+      }
+      const title = clean(document.querySelector('h1')?.innerText || document.title || '');
+      const byline = clean(document.querySelector('[rel="author"], .author, .byline, [itemprop="author"]')?.innerText || '');
+      const meta = (name) => clean(document.querySelector(`meta[name="${name}"], meta[property="${name}"]`)?.content || '');
+      const excerpt = meta('description') || meta('og:description');
+      const contentHTML = bestNode ? cut(cloneContent(bestNode), 180000) : '';
+      const wordCount = clean(bestNode?.innerText || '').split(/\\s+/).filter(Boolean).length;
+      return JSON.stringify({ url: location.href, title, byline, excerpt, contentHTML, wordCount });
+    })()
+    """
+}
+
 private final class AppPreferences {
     static let shared = AppPreferences()
     static let didChangeNotification = Notification.Name("NorthStarPreferencesDidChange")
@@ -2684,6 +2965,44 @@ private final class BrowserHistoryStore {
             return []
         }
 
+        return entries
+    }
+}
+
+private struct BookmarkEntry: Codable {
+    let id: UUID
+    var title: String
+    var url: String
+    var date: Date
+}
+
+private final class BookmarkStore {
+    static let shared = BookmarkStore()
+    private(set) var entries: [BookmarkEntry]
+    private let defaults = UserDefaults.standard
+    private let key = "browserBookmarkEntries"
+    private let maximumEntries = 500
+    private init() { entries = Self.loadEntries(defaults: defaults, key: key) }
+    func isBookmarked(url: URL) -> Bool { entries.contains { $0.url == url.absoluteString } }
+    @discardableResult func toggle(url: URL, title: String) -> Bool {
+        if isBookmarked(url: url) { remove(url: url); return false }
+        add(url: url, title: title); return true
+    }
+    func add(url: URL, title: String) {
+        guard let scheme = url.scheme?.lowercased(), ["http", "https", "file"].contains(scheme) else { return }
+        let urlString = url.absoluteString
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        entries.removeAll { $0.url == urlString }
+        entries.insert(BookmarkEntry(id: UUID(), title: cleanTitle.isEmpty ? urlString : cleanTitle, url: urlString, date: Date()), at: 0)
+        if entries.count > maximumEntries { entries.removeLast(entries.count - maximumEntries) }
+        save()
+    }
+    func remove(url: URL) { entries.removeAll { $0.url == url.absoluteString }; save() }
+    func remove(id: UUID) { entries.removeAll { $0.id == id }; save() }
+    func clear() { entries.removeAll(); save() }
+    private func save() { guard let data = try? JSONEncoder().encode(entries) else { return }; defaults.set(data, forKey: key) }
+    private static func loadEntries(defaults: UserDefaults, key: String) -> [BookmarkEntry] {
+        guard let data = defaults.data(forKey: key), let entries = try? JSONDecoder().decode([BookmarkEntry].self, from: data) else { return [] }
         return entries
     }
 }
@@ -6089,8 +6408,58 @@ private enum ParserPage {
     }
 }
 
+
+private enum ReaderPage {
+    static func html(snapshot: ReaderSnapshot, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
+        let colors = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
+        let title = snapshot.title.isEmpty ? "Статья" : snapshot.title
+        let source = snapshot.url.isEmpty ? "Неизвестный источник" : snapshot.url
+        let byline = snapshot.byline.isEmpty ? "" : "<p class=\"byline\">\(snapshot.byline.htmlEscaped)</p>"
+        let excerpt = snapshot.excerpt.isEmpty ? "" : "<p class=\"excerpt\">\(snapshot.excerpt.htmlEscaped)</p>"
+        let content = snapshot.contentHTML.isEmpty ? "<p class=\"empty\">Не удалось извлечь основной текст страницы.</p>" : snapshot.contentHTML
+        return """
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <base target="_blank">
+          <title>\(title.htmlEscaped)</title>
+          <style>
+            :root { color-scheme: \(colors.colorScheme); --bg: \(colors.background); --text: \(colors.text); --muted: \(colors.muted); --line: \(colors.line); --accent: \(colors.accent); --max-width: min(720px, calc(100vw - 48px)); }
+            * { box-sizing: border-box; }
+            body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--text); font: 18px/1.72 "New York", "Iowan Old Style", Palatino, Georgia, serif; }
+            main { width: var(--max-width); margin: 0 auto; padding: 48px 0 72px; }
+            header { display: grid; gap: 12px; margin-bottom: 28px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }
+            .kicker { margin: 0; color: var(--accent); font: 700 12px/1 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; letter-spacing: 0.08em; text-transform: uppercase; }
+            h1 { margin: 0; font-size: clamp(34px, 5vw, 52px); line-height: 1.08; }
+            .byline, .excerpt, .source, .empty { margin: 0; color: var(--muted); font: 15px/1.55 -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+            .source { overflow-wrap: anywhere; font-size: 13px; }
+            .article { display: grid; gap: 18px; }
+            .article p { margin: 0 0 1em; }
+            .article img { display: block; width: min(100%, 680px); height: auto; margin: 1.2em auto; border-radius: 12px; }
+            .article a { color: var(--accent); }
+          </style>
+        </head>
+        <body>
+          <main>
+            <header>
+              <p class="kicker">\(readerTitle)</p>
+              <h1>\(title.htmlEscaped)</h1>
+              \(byline)
+              \(excerpt)
+              <p class="source">\(source.htmlEscaped)</p>
+            </header>
+            <article class="article">\(content)</article>
+          </main>
+        </body>
+        </html>
+        """
+    }
+}
+
 private enum HomePage {
-    static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry]) -> String {
+    static func html(searchEngine: SearchEngine, searchRegion: SearchRegion, searchLanguage: SearchLanguage, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode, recentHistory: [BrowserHistoryEntry], bookmarks: [BookmarkEntry]) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
         let region = searchRegion.displayTitle.htmlEscaped
@@ -6119,6 +6488,19 @@ private enum HomePage {
             </a>
             """
         }.joined()
+        let defaultQuickLinks = """
+            <a class="quick-link" href="https://github.com"><strong>GitHub</strong><small>github.com</small></a>
+            <a class="quick-link" href="https://news.ycombinator.com"><strong>Hacker News</strong><small>news.ycombinator.com</small></a>
+            <a class="quick-link" href="https://developer.apple.com"><strong>Apple Dev</strong><small>developer.apple.com</small></a>
+            <a class="quick-link" href="http://localhost:3000"><strong>Localhost</strong><small>localhost:3000</small></a>
+            """
+        let bookmarkQuickLinks = bookmarks.prefix(8).map { entry in
+            let host = URL(string: entry.url)?.host(percentEncoded: false) ?? entry.url
+            return """
+            <a class="quick-link" href="\(entry.url.htmlEscaped)"><strong>\(entry.title.htmlEscaped)</strong><small>\(host.htmlEscaped)</small></a>
+            """
+        }.joined()
+        let quickLinksMarkup = bookmarkQuickLinks.isEmpty ? defaultQuickLinks : bookmarkQuickLinks
 
         return """
         <!doctype html>
@@ -6545,14 +6927,9 @@ private enum HomePage {
                 <div class="panel">
                   <div class="panel-head">
                     <h2>Быстрые ссылки</h2>
-                    <span class="section-label">Закреплено</span>
+                    <span class="section-label">\(bookmarks.isEmpty ? "Закреплено" : "Закладки")</span>
                   </div>
-                  <nav class="quick" aria-label="Быстрые ссылки">
-                    <a class="quick-link" href="https://github.com"><strong>GitHub</strong><small>github.com</small></a>
-                    <a class="quick-link" href="https://news.ycombinator.com"><strong>Hacker News</strong><small>news.ycombinator.com</small></a>
-                    <a class="quick-link" href="https://developer.apple.com"><strong>Apple Dev</strong><small>developer.apple.com</small></a>
-                    <a class="quick-link" href="http://localhost:3000"><strong>Localhost</strong><small>localhost:3000</small></a>
-                  </nav>
+                  <nav class="quick" aria-label="Быстрые ссылки">\(quickLinksMarkup)</nav>
                 </div>
                 <div class="panel">
                   <div class="panel-head">
@@ -6561,7 +6938,7 @@ private enum HomePage {
                   </div>
                   <div class="actions">
                     <a class="action-link" href="\(northStarSettingsScheme)://home">Настройки <span class="arrow">→</span></a>
-                    <a class="action-link" href="https://mediamarkt.pl">MediaMarkt PL <span class="arrow">→</span></a>
+                    <a class="action-link" href="\(northStarSettingsScheme)://update?section=bookmarks">Закладки <span class="arrow">→</span></a>
                   </div>
                 </div>
               </div>
@@ -6629,6 +7006,7 @@ private enum SettingsSection: String, CaseIterable {
     case browser
     case currency
     case performance
+    case bookmarks
     case history
     case downloads
 
@@ -6648,6 +7026,8 @@ private enum SettingsSection: String, CaseIterable {
             return "Валюты"
         case .performance:
             return "Производительность"
+        case .bookmarks:
+            return "Закладки"
         case .history:
             return "История"
         case .downloads:
@@ -6669,6 +7049,8 @@ private enum SettingsSection: String, CaseIterable {
             return "Курс и конвертация"
         case .performance:
             return "Состояние текущего окна"
+        case .bookmarks:
+            return "Сохранённые страницы"
         case .history:
             return "Посещённые страницы"
         case .downloads:
@@ -6687,7 +7069,7 @@ private enum SettingsSection: String, CaseIterable {
 }
 
 private enum SettingsPage {
-    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) -> String {
+    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], bookmarks: [BookmarkEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) -> String {
         let palette = HomePalette(theme: theme, colorScheme: preferences.colorScheme, design: preferences.design)
         let activeSectionID = activeSection.identifier.htmlEscaped
         let searchEngineLogo = preferences.searchEngine.logoURL.htmlEscaped
@@ -6760,6 +7142,23 @@ private enum SettingsPage {
               </span>
               <time>\(DateDisplay.string(from: entry.date).htmlEscaped)</time>
             </a>
+            """
+        }.joined()
+
+        let bookmarksMarkup = bookmarks.prefix(120).map { entry in
+            let openURL = "\(northStarSettingsScheme)://open?url=\(entry.url.urlQueryEscaped)"
+            let removeURL = "\(northStarSettingsScheme)://remove-bookmark?id=\(entry.id.uuidString.urlQueryEscaped)"
+            return """
+            <div class="list-row bookmark-row">
+              <a class="row-main" href="\(openURL)">
+                <strong>\(entry.title.htmlEscaped)</strong>
+                <small>\(entry.url.htmlEscaped)</small>
+              </a>
+              <span class="row-meta">
+                <time>\(DateDisplay.string(from: entry.date).htmlEscaped)</time>
+                <a class="text-button" href="\(removeURL)">Удалить</a>
+              </span>
+            </div>
             """
         }.joined()
 
@@ -7062,6 +7461,10 @@ private enum SettingsPage {
               padding: 18px;
               margin: 0;
             }
+            .text-button { color: var(--muted); text-decoration: none; font-size: 12px; font-weight: 700; }
+            .text-button:hover { color: var(--accent); }
+            .bookmark-row { grid-template-columns: minmax(0, 1fr) auto; }
+            .bookmark-row .row-main { color: var(--text); text-decoration: none; }
             .button {
               display: inline-flex;
               align-items: center;
@@ -7160,6 +7563,10 @@ private enum SettingsPage {
                   <button class="overview-card" type="button" data-section="currency">
                     <h3>Валюты</h3>
                     <span>\(preferences.defaultCurrencySource.rawValue) → \(preferences.defaultCurrencyTarget.rawValue), ключ скрыт</span>
+                  </button>
+                  <button class="overview-card" type="button" data-section="bookmarks">
+                    <h3>Закладки</h3>
+                    <span>\(bookmarks.count) сохранённых страниц</span>
                   </button>
                   <button class="overview-card" type="button" data-section="history">
                     <h3>История</h3>
@@ -7315,6 +7722,19 @@ private enum SettingsPage {
                 </div>
                 <div class="list">
                   \(performanceMarkup.isEmpty ? "<p class=\"empty\">Данных о загрузках пока нет.</p>" : performanceMarkup)
+                </div>
+              </section>
+
+              <section class="panel" data-panel="bookmarks" aria-label="Закладки">
+                <div class="panel-head">
+                  <div>
+                    <h1>Закладки</h1>
+                    <p class="muted">Сохранённые страницы. Добавляйте текущую вкладку через звёздочку или ⌘D.</p>
+                  </div>
+                  <a class="button" href="\(northStarSettingsScheme)://clear-bookmarks">Очистить</a>
+                </div>
+                <div class="list">
+                  \(bookmarksMarkup.isEmpty ? "<p class=\"empty\">Закладок пока нет. Откройте страницу и нажмите звёздочку в панели или ⌘D.</p>" : bookmarksMarkup)
                 </div>
               </section>
 
@@ -7532,6 +7952,13 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     editItem.submenu = editMenu
     mainMenu.addItem(editItem)
 
+    let bookmarksItem = NSMenuItem()
+    let bookmarksMenu = NSMenu(title: "Закладки")
+    bookmarksMenu.addItem(withTitle: "Добавить/удалить закладку", action: #selector(BrowserViewController.toggleBookmarkCommand(_:)), keyEquivalent: "d")
+    bookmarksMenu.addItem(withTitle: "Показать все закладки", action: #selector(BrowserViewController.showBookmarksCommand(_:)), keyEquivalent: "b")
+    bookmarksItem.submenu = bookmarksMenu
+    mainMenu.addItem(bookmarksItem)
+
     let viewItem = NSMenuItem()
     let viewMenu = NSMenu(title: "Вид")
     viewMenu.addItem(withTitle: "Назад", action: #selector(BrowserViewController.goBackCommand(_:)), keyEquivalent: "[")
@@ -7539,6 +7966,8 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     viewMenu.addItem(withTitle: "Обновить", action: #selector(BrowserViewController.reloadCommand(_:)), keyEquivalent: "r")
     let hardReloadItem = viewMenu.addItem(withTitle: "Жёсткое обновление без кэша", action: #selector(BrowserViewController.hardReloadCommand(_:)), keyEquivalent: "r")
     hardReloadItem.keyEquivalentModifierMask = [.command, .shift]
+    let readerItem = viewMenu.addItem(withTitle: "Режим чтения", action: #selector(BrowserViewController.openReaderCommand(_:)), keyEquivalent: "r")
+    readerItem.keyEquivalentModifierMask = [.command, .shift, .option]
     viewMenu.addItem(.separator())
     viewMenu.addItem(withTitle: "Предыдущая вкладка", action: #selector(BrowserViewController.previousTabCommand(_:)), keyEquivalent: "{")
     viewMenu.addItem(withTitle: "Следующая вкладка", action: #selector(BrowserViewController.nextTabCommand(_:)), keyEquivalent: "}")
