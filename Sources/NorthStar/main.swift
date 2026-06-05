@@ -524,7 +524,7 @@ private final class BrowserViewController: NSViewController {
         addressSuggestionPopover.show(
             relativeTo: addressField.bounds,
             of: addressField,
-            preferredEdge: .minY
+            preferredEdge: .maxY
         )
     }
 
@@ -4799,13 +4799,15 @@ private final class AddressSuggestionViewController: NSViewController {
     override func loadView() {
         view = NSView()
         view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        view.layer?.cornerRadius = 14
+        view.layer?.masksToBounds = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.96).cgColor
 
         stackView.translatesAutoresizingMaskIntoConstraints = false
         stackView.orientation = .vertical
         stackView.alignment = .width
-        stackView.spacing = 4
-        stackView.edgeInsets = NSEdgeInsets(top: 6, left: 6, bottom: 6, right: 6)
+        stackView.spacing = 3
+        stackView.edgeInsets = NSEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
         view.addSubview(stackView)
 
         NSLayoutConstraint.activate([
@@ -4832,8 +4834,8 @@ private final class AddressSuggestionViewController: NSViewController {
         }
 
         preferredContentSize = NSSize(
-            width: max(340, min(560, width)),
-            height: CGFloat(suggestions.count) * 44 + 10
+            width: max(440, min(680, max(width, 520))),
+            height: CGFloat(suggestions.count) * 56 + 16
         )
     }
 }
@@ -4842,6 +4844,7 @@ private final class AddressSuggestionViewController: NSViewController {
 private final class AddressSuggestionRowView: NSControl {
     var onSelect: (() -> Void)?
 
+    private let iconContainer = NSView()
     private let iconView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let detailField = NSTextField(labelWithString: "")
@@ -4852,37 +4855,48 @@ private final class AddressSuggestionRowView: NSControl {
 
         translatesAutoresizingMaskIntoConstraints = false
         wantsLayer = true
-        layer?.cornerRadius = 8
+        layer?.cornerRadius = 11
+
+        iconContainer.translatesAutoresizingMaskIntoConstraints = false
+        iconContainer.wantsLayer = true
+        iconContainer.layer?.cornerRadius = 10
+        iconContainer.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyDown
         iconView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 14, weight: .medium)
-        iconView.contentTintColor = .secondaryLabelColor
+        iconView.contentTintColor = .controlAccentColor
 
         titleField.translatesAutoresizingMaskIntoConstraints = false
-        titleField.font = .systemFont(ofSize: 13, weight: .semibold)
+        titleField.font = .systemFont(ofSize: 13.5, weight: .bold)
         titleField.lineBreakMode = .byTruncatingTail
 
         detailField.translatesAutoresizingMaskIntoConstraints = false
-        detailField.font = .systemFont(ofSize: 11.5)
+        detailField.font = .systemFont(ofSize: 12)
         detailField.textColor = .secondaryLabelColor
         detailField.lineBreakMode = .byTruncatingMiddle
 
-        addSubview(iconView)
+        addSubview(iconContainer)
+        iconContainer.addSubview(iconView)
         addSubview(titleField)
         addSubview(detailField)
 
         NSLayoutConstraint.activate([
-            heightAnchor.constraint(equalToConstant: 40),
+            heightAnchor.constraint(equalToConstant: 52),
 
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 18),
-            iconView.heightAnchor.constraint(equalToConstant: 18),
+            iconContainer.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            iconContainer.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconContainer.widthAnchor.constraint(equalToConstant: 34),
+            iconContainer.heightAnchor.constraint(equalToConstant: 34),
 
-            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 6),
-            titleField.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
-            titleField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            iconView.centerXAnchor.constraint(equalTo: iconContainer.centerXAnchor),
+            iconView.centerYAnchor.constraint(equalTo: iconContainer.centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 17),
+            iconView.heightAnchor.constraint(equalToConstant: 17),
+
+            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            titleField.leadingAnchor.constraint(equalTo: iconContainer.trailingAnchor, constant: 11),
+            titleField.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
 
             detailField.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 2),
             detailField.leadingAnchor.constraint(equalTo: titleField.leadingAnchor),
@@ -4908,8 +4922,11 @@ private final class AddressSuggestionRowView: NSControl {
 
     private func applyState() {
         layer?.backgroundColor = isSelected
-            ? NSColor.controlAccentColor.withAlphaComponent(0.18).cgColor
+            ? NSColor.controlAccentColor.withAlphaComponent(0.16).cgColor
             : NSColor.clear.cgColor
+        iconContainer.layer?.backgroundColor = isSelected
+            ? NSColor.controlAccentColor.withAlphaComponent(0.24).cgColor
+            : NSColor.controlAccentColor.withAlphaComponent(0.12).cgColor
     }
 }
 
@@ -5853,9 +5870,12 @@ private enum HomePage {
         }.joined()
         let recentMarkup = recentHistory.prefix(6).map { entry in
             """
-            <a href="\(entry.url.htmlEscaped)">
-              <strong>\(entry.title.htmlEscaped)</strong>
-              <span>\(entry.url.htmlEscaped)</span>
+            <a class="recent-item" href="\(entry.url.htmlEscaped)">
+              <span class="site-dot"></span>
+              <span class="recent-copy">
+                <strong>\(entry.title.htmlEscaped)</strong>
+                <small>\(entry.url.htmlEscaped)</small>
+              </span>
             </a>
             """
         }.joined()
@@ -5894,8 +5914,6 @@ private enum HomePage {
               font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
               color: var(--text);
               background: var(--home-bg);
-              display: grid;
-              align-items: center;
               overflow: auto;
             }
             body::before {
@@ -5908,139 +5926,228 @@ private enum HomePage {
               opacity: var(--home-overlay-opacity);
               mask-image: radial-gradient(circle at center, black, transparent 78%);
             }
+            body::after {
+              content: "";
+              position: fixed;
+              inset: 0;
+              pointer-events: none;
+              background:
+                linear-gradient(90deg, color-mix(in srgb, var(--accent) 10%, transparent), transparent 38%),
+                linear-gradient(180deg, rgba(255,255,255,0.04), transparent 42%);
+            }
             main {
               width: min(var(--page-width), calc(100vw - 48px));
               display: grid;
-              gap: var(--gap);
+              gap: 18px;
               position: relative;
               z-index: 1;
-              margin: 42px auto;
+              margin: 34px auto 48px;
             }
-            .mast {
+            .hero {
               display: grid;
-              gap: 10px;
+              grid-template-columns: auto minmax(0, 1fr);
+              gap: 18px;
+              align-items: center;
+              padding: 18px 2px 4px;
+            }
+            .brand-chip {
+              width: 58px;
+              height: 58px;
+              display: grid;
+              place-items: center;
+              border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line));
+              border-radius: 16px;
+              background: color-mix(in srgb, var(--panel) 72%, transparent);
+              box-shadow: 0 18px 44px var(--shadow);
+              font-weight: 900;
+              font-size: 18px;
             }
             h1 {
               margin: 0;
-              font-size: clamp(44px, 7vw, 86px);
-              line-height: 0.96;
+              font-size: clamp(44px, 7vw, 76px);
+              line-height: 0.92;
               letter-spacing: 0;
               font-weight: 800;
             }
-            .line {
-              width: min(320px, 44vw);
-              height: 3px;
-              border-radius: 999px;
-              background: linear-gradient(90deg, var(--accent), var(--accent-2));
+            .kicker {
+              margin: 0 0 6px;
+              color: var(--accent);
+              font-size: 12px;
+              font-weight: 800;
+              letter-spacing: 0.08em;
+              text-transform: uppercase;
             }
             .sub {
-              margin: 0;
+              margin: 10px 0 0;
               color: var(--muted);
-              font-size: 17px;
-              line-height: 1.5;
+              font-size: 16px;
+              line-height: 1.45;
+            }
+            .command {
+              display: grid;
+              gap: 12px;
+              padding: 14px;
+              border: 1px solid var(--line);
+              border-radius: 18px;
+              background: color-mix(in srgb, var(--panel) 88%, transparent);
+              box-shadow: 0 24px 64px var(--shadow);
+              backdrop-filter: blur(18px);
             }
             .search {
               display: grid;
               grid-template-columns: minmax(240px, 1fr) auto;
               gap: 10px;
-              padding: 12px;
-              background: var(--panel);
-              border: 1px solid var(--line);
-              border-radius: calc(var(--radius) + 4px);
-              box-shadow: 0 26px 70px var(--shadow);
             }
             input {
               width: 100%;
               min-width: 0;
-              border: 0;
+              min-height: 58px;
+              border: 1px solid transparent;
               outline: 0;
-              border-radius: var(--radius);
-              padding: 16px 18px;
+              border-radius: 14px;
+              padding: 0 18px;
               font-size: 17px;
-              color: var(--text);
-              background: transparent;
-            }
-            input::placeholder { color: var(--muted); }
-            select {
-              width: 100%;
-              min-width: 0;
-              border: 1px solid var(--line);
-              outline: 0;
-              border-radius: var(--radius);
-              padding: 0 14px;
-              font-size: 15px;
               font-weight: 650;
               color: var(--text);
-              background: color-mix(in srgb, var(--panel) 72%, transparent);
+              background: color-mix(in srgb, var(--panel-strong) 58%, transparent);
+            }
+            input:focus { border-color: color-mix(in srgb, var(--accent) 54%, var(--line)); }
+            input::placeholder { color: var(--muted); }
+            select {
+              appearance: none;
+              -webkit-appearance: none;
+              width: 100%;
+              min-width: 0;
+              min-height: 30px;
+              border: 0;
+              outline: 0;
+              border-radius: 10px;
+              padding: 0 28px 0 0;
+              font-size: 14px;
+              font-weight: 800;
+              color: var(--text);
+              background: transparent;
+              cursor: pointer;
             }
             button {
               border: 0;
-              border-radius: var(--radius);
+              border-radius: 14px;
               padding: 0 22px;
-              min-width: 112px;
+              min-width: 118px;
+              min-height: 58px;
               font-size: 15px;
-              font-weight: 700;
+              font-weight: 850;
               color: #071015;
               background: linear-gradient(135deg, var(--accent), var(--accent-2));
               cursor: pointer;
             }
-            .tools {
+            button:hover { filter: brightness(1.05); }
+            .filters {
               display: grid;
               grid-template-columns: repeat(3, minmax(0, 1fr));
               gap: 10px;
-              margin-top: -8px;
             }
-            .quick {
+            .filter {
               display: grid;
-              grid-template-columns: repeat(4, minmax(0, 1fr));
-              gap: 10px;
+              gap: 5px;
+              padding: 10px 12px;
+              border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+              border-radius: 14px;
+              background: color-mix(in srgb, var(--panel-strong) 48%, transparent);
+              position: relative;
             }
-            .quick a,
-            .recent a,
-            .action a {
-              color: var(--text);
-              text-decoration: none;
-              padding: 14px 15px;
-              border: 1px solid var(--line);
-              border-radius: var(--radius);
-              background: color-mix(in srgb, var(--panel) 74%, transparent);
-              font-size: 14px;
-              font-weight: 650;
+            .filter::after {
+              content: "";
+              position: absolute;
+              right: 14px;
+              bottom: 20px;
+              width: 7px;
+              height: 7px;
+              border-right: 2px solid var(--muted);
+              border-bottom: 2px solid var(--muted);
+              transform: rotate(45deg);
+              pointer-events: none;
             }
-            .quick a { text-align: center; }
+            .filter span,
+            .section-label,
             .context {
               color: var(--muted);
-              font-size: 13px;
+              font-size: 11px;
+              font-weight: 800;
+              letter-spacing: 0.04em;
+              text-transform: uppercase;
             }
-            .grid {
+            .context {
+              display: flex;
+              gap: 8px;
+              align-items: center;
+              text-transform: none;
+              letter-spacing: 0;
+              font-size: 13px;
+              font-weight: 650;
+            }
+            .context::before {
+              content: "";
+              width: 7px;
+              height: 7px;
+              border-radius: 999px;
+              background: var(--accent);
+            }
+            .dashboard {
               display: grid;
-              grid-template-columns: minmax(0, 1.15fr) minmax(260px, 0.85fr);
+              grid-template-columns: minmax(0, 1.05fr) minmax(260px, 0.95fr);
+              gap: 14px;
+              align-items: start;
+            }
+            .stack {
+              display: grid;
               gap: 14px;
             }
             .panel {
               display: grid;
-              gap: 10px;
-              padding: 14px;
+              gap: 12px;
+              padding: 16px;
               border: 1px solid var(--line);
-              border-radius: calc(var(--radius) + 2px);
+              border-radius: 18px;
               background: color-mix(in srgb, var(--panel) 82%, transparent);
               box-shadow: 0 16px 42px var(--shadow);
+              backdrop-filter: blur(16px);
+            }
+            .panel-head {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 12px;
             }
             .panel h2 {
               margin: 0;
-              font-size: 15px;
+              font-size: 16px;
               line-height: 1.2;
             }
-            .recent {
+            .quick {
               display: grid;
-              gap: 8px;
+              grid-template-columns: repeat(2, minmax(0, 1fr));
+              gap: 10px;
             }
-            .recent a {
+            .quick-link,
+            .action-link,
+            .recent-item {
+              color: var(--text);
+              text-decoration: none;
+              border: 1px solid var(--line);
+              border-radius: 14px;
+              background: color-mix(in srgb, var(--panel-strong) 46%, transparent);
+              font-size: 14px;
+              font-weight: 760;
+            }
+            .quick-link {
+              min-height: 74px;
               display: grid;
-              gap: 4px;
-              padding: 12px;
+              align-content: center;
+              gap: 7px;
+              padding: 13px;
             }
-            .recent span {
+            .quick-link small {
               min-width: 0;
               overflow: hidden;
               text-overflow: ellipsis;
@@ -6048,72 +6155,154 @@ private enum HomePage {
               color: var(--muted);
               font-size: 12px;
             }
-            .action {
-              display: grid;
-              gap: 8px;
+            .quick-link:hover,
+            .action-link:hover,
+            .recent-item:hover {
+              border-color: color-mix(in srgb, var(--accent) 56%, var(--line));
+              background: color-mix(in srgb, var(--accent) 10%, var(--panel));
             }
-            .action a {
+            .actions {
+              display: grid;
+              gap: 9px;
+            }
+            .action-link {
+              min-height: 54px;
               display: flex;
               justify-content: space-between;
               align-items: center;
+              padding: 0 14px;
+            }
+            .arrow {
+              color: var(--accent);
+              font-weight: 900;
+            }
+            .recent {
+              display: grid;
+              gap: 9px;
+              max-height: 350px;
+              overflow: auto;
+              padding-right: 2px;
+            }
+            .recent-item {
+              display: grid;
+              grid-template-columns: auto minmax(0, 1fr);
+              gap: 10px;
+              align-items: center;
+              min-height: 58px;
+              padding: 10px 12px;
+            }
+            .site-dot {
+              width: 28px;
+              height: 28px;
+              border-radius: 10px;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
+              box-shadow: inset 0 0 0 1px rgba(255,255,255,0.34);
+            }
+            .recent-copy {
+              min-width: 0;
+              display: grid;
+              gap: 3px;
+            }
+            .recent-copy strong,
+            .recent-copy small {
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            }
+            .recent-copy small {
+              color: var(--muted);
+              font-size: 12px;
+            }
+            .empty {
+              margin: 0;
+              color: var(--muted);
+              border: 1px dashed var(--line);
+              border-radius: 14px;
+              padding: 15px;
+              font-size: 13px;
             }
             @media (max-width: 960px) {
-              .grid { grid-template-columns: 1fr; }
-              .tools { grid-template-columns: 1fr; }
+              .dashboard { grid-template-columns: 1fr; }
+              .filters { grid-template-columns: 1fr; }
             }
             @media (max-width: 680px) {
+              main { width: min(var(--page-width), calc(100vw - 28px)); margin-top: 22px; }
+              .hero { grid-template-columns: 1fr; }
               .search { grid-template-columns: 1fr; }
-              input, button { grid-column: auto; }
-              select { height: 46px; }
-              button { height: 46px; }
+              input, button { min-height: 50px; }
               .quick { grid-template-columns: repeat(2, minmax(0, 1fr)); }
             }
           </style>
         </head>
         <body>
           <main>
-            <section class="mast" aria-label="NorthStar">
-              <h1>\(appName)</h1>
-              <div class="line"></div>
-              <p class="sub">Поиск, сайты, быстрый старт и недавние страницы в одном месте.</p>
-            </section>
-            <form class="search" id="searchForm">
-              <input id="query" name="q" autofocus autocomplete="off" placeholder="Поиск или адрес сайта">
-              <button type="submit">Открыть</button>
-            </form>
-            <div class="tools" aria-label="Настройки поиска">
-              <select id="region" name="region" aria-label="Регион поиска">
-                \(regionOptions)
-              </select>
-              <select id="language" name="language" aria-label="Язык поиска">
-                \(languageOptions)
-              </select>
-              <select id="engine" name="engine" aria-label="Поисковая система">
-                \(engineOptions)
-              </select>
-            </div>
-            <div class="context">Поиск: \(engine) · \(region) · \(language)</div>
-            <section class="grid" aria-label="Быстрый старт">
-              <div class="panel">
-                <h2>Быстрые ссылки</h2>
-                <nav class="quick" aria-label="Быстрые ссылки">
-                  <a href="https://github.com">GitHub</a>
-                  <a href="https://news.ycombinator.com">Hacker News</a>
-                  <a href="https://developer.apple.com">Apple Dev</a>
-                  <a href="http://localhost:3000">Localhost</a>
-                </nav>
+            <section class="hero" aria-label="NorthStar">
+              <div class="brand-chip">NS</div>
+              <div>
+                <p class="kicker">Браузер NorthStar</p>
+                <h1>Быстрый старт</h1>
+                <p class="sub">Поиск, сайты, настройки и последние страницы в одном спокойном рабочем экране.</p>
               </div>
-              <div class="panel">
-                <h2>Действия</h2>
-                <div class="action">
-                  <a href="\(northStarSettingsScheme)://home">Настройки <span>→</span></a>
-                  <a href="https://mediamarkt.pl">MediaMarkt PL <span>→</span></a>
+            </section>
+            <section class="command" aria-label="Поиск">
+              <form class="search" id="searchForm">
+                <input id="query" name="q" autofocus autocomplete="off" placeholder="Поиск или адрес сайта">
+                <button type="submit">Открыть</button>
+              </form>
+              <div class="filters" aria-label="Настройки поиска">
+                <label class="filter">
+                  <span>Регион</span>
+                  <select id="region" name="region" aria-label="Регион поиска">
+                    \(regionOptions)
+                  </select>
+                </label>
+                <label class="filter">
+                  <span>Язык</span>
+                  <select id="language" name="language" aria-label="Язык поиска">
+                    \(languageOptions)
+                  </select>
+                </label>
+                <label class="filter">
+                  <span>Движок</span>
+                  <select id="engine" name="engine" aria-label="Поисковая система">
+                    \(engineOptions)
+                  </select>
+                </label>
+              </div>
+              <div class="context">\(engine) · \(region) · \(language)</div>
+            </section>
+            <section class="dashboard" aria-label="Быстрый старт">
+              <div class="stack">
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>Быстрые ссылки</h2>
+                    <span class="section-label">Закреплено</span>
+                  </div>
+                  <nav class="quick" aria-label="Быстрые ссылки">
+                    <a class="quick-link" href="https://github.com"><strong>GitHub</strong><small>github.com</small></a>
+                    <a class="quick-link" href="https://news.ycombinator.com"><strong>Hacker News</strong><small>news.ycombinator.com</small></a>
+                    <a class="quick-link" href="https://developer.apple.com"><strong>Apple Dev</strong><small>developer.apple.com</small></a>
+                    <a class="quick-link" href="http://localhost:3000"><strong>Localhost</strong><small>localhost:3000</small></a>
+                  </nav>
+                </div>
+                <div class="panel">
+                  <div class="panel-head">
+                    <h2>Действия</h2>
+                    <span class="section-label">Инструменты</span>
+                  </div>
+                  <div class="actions">
+                    <a class="action-link" href="\(northStarSettingsScheme)://home">Настройки <span class="arrow">→</span></a>
+                    <a class="action-link" href="https://mediamarkt.pl">MediaMarkt PL <span class="arrow">→</span></a>
+                  </div>
                 </div>
               </div>
               <div class="panel">
-                <h2>Недавние страницы</h2>
+                <div class="panel-head">
+                  <h2>Недавние страницы</h2>
+                  <span class="section-label">История</span>
+                </div>
                 <div class="recent">
-                  \(recentMarkup.isEmpty ? "<p class=\"context\">История пока пуста.</p>" : recentMarkup)
+                  \(recentMarkup.isEmpty ? "<p class=\"empty\">История пока пуста.</p>" : recentMarkup)
                 </div>
               </div>
             </section>
@@ -6352,12 +6541,14 @@ private enum SettingsPage {
               min-height: 100vh;
               font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
               color: var(--text);
-              background: var(--bg);
+              background:
+                linear-gradient(135deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 32%),
+                var(--bg);
             }
             .settings-shell {
               min-height: 100vh;
               display: grid;
-              grid-template-columns: 260px minmax(0, 1fr);
+              grid-template-columns: 244px minmax(0, 1fr);
             }
             .sidebar {
               position: sticky;
@@ -6365,15 +6556,16 @@ private enum SettingsPage {
               height: 100vh;
               display: grid;
               align-content: start;
-              gap: 20px;
+              gap: 18px;
               border-right: 1px solid var(--line);
-              background: color-mix(in srgb, var(--panel-strong) 82%, var(--bg));
-              padding: 22px 14px;
+              background: color-mix(in srgb, var(--panel-strong) 76%, var(--bg));
+              padding: 18px 12px;
             }
             .brand {
               display: grid;
               gap: 4px;
-              padding: 0 10px 4px;
+              padding: 8px 10px 10px;
+              border-bottom: 1px solid var(--line);
             }
             .brand strong {
               font-size: 20px;
@@ -6387,7 +6579,7 @@ private enum SettingsPage {
             }
             .nav {
               display: grid;
-              gap: 4px;
+              gap: 5px;
             }
             .nav-item,
             .overview-card {
@@ -6403,7 +6595,8 @@ private enum SettingsPage {
             .nav-item {
               display: grid;
               gap: 4px;
-              padding: 10px 11px;
+              min-height: 52px;
+              padding: 9px 11px;
             }
             .nav-item strong {
               font-size: 14px;
@@ -6412,33 +6605,37 @@ private enum SettingsPage {
             .nav-item.active,
             .nav-item:hover {
               border-color: color-mix(in srgb, var(--accent) 44%, var(--line));
-              background: color-mix(in srgb, var(--accent) 12%, transparent);
+              background: color-mix(in srgb, var(--accent) 13%, var(--panel));
             }
             .content {
               min-width: 0;
               max-height: 100vh;
               overflow: auto;
-              padding: 34px;
+              padding: 28px;
             }
             .panel {
               width: min(var(--settings-width), 100%);
               display: none;
-              gap: 18px;
+              gap: 14px;
               margin: 0 auto;
             }
             .panel.active {
               display: grid;
             }
             .panel-head {
-              display: flex;
+              display: grid;
+              grid-template-columns: minmax(0, 1fr) auto;
               justify-content: space-between;
-              gap: 18px;
-              align-items: end;
-              border-bottom: 1px solid var(--line);
-              padding-bottom: 18px;
+              gap: 16px;
+              align-items: center;
+              border: 1px solid var(--line);
+              border-radius: calc(var(--radius) + 2px);
+              background: color-mix(in srgb, var(--panel) 86%, transparent);
+              box-shadow: 0 14px 34px var(--shadow);
+              padding: 18px;
             }
             h1, h2, h3, p { margin: 0; letter-spacing: 0; }
-            h1 { font-size: 34px; line-height: 1.05; }
+            h1 { font-size: 28px; line-height: 1.05; }
             h2 { font-size: 21px; line-height: 1.15; }
             h3 { font-size: 15px; line-height: 1.2; }
             .overview-grid,
@@ -6453,8 +6650,8 @@ private enum SettingsPage {
             .list-row {
               border: 1px solid var(--line);
               border-radius: var(--radius);
-              background: var(--panel);
-              box-shadow: 0 14px 34px var(--shadow);
+              background: color-mix(in srgb, var(--panel) 88%, transparent);
+              box-shadow: 0 10px 24px color-mix(in srgb, var(--shadow) 76%, transparent);
             }
             .overview-card {
               min-height: 96px;
@@ -6471,11 +6668,11 @@ private enum SettingsPage {
               font-size: 13px;
             }
             .setting-card {
-              min-height: 92px;
+              min-height: 96px;
               display: grid;
               align-content: center;
               gap: 10px;
-              padding: 15px;
+              padding: 16px;
             }
             label {
               display: grid;
@@ -6489,16 +6686,25 @@ private enum SettingsPage {
             }
             select,
             input {
+              appearance: none;
+              -webkit-appearance: none;
               width: 100%;
               min-width: 0;
-              min-height: 38px;
-              border-radius: var(--radius);
+              min-height: 42px;
+              border-radius: calc(var(--radius) - 2px);
               border: 1px solid var(--line);
               color: var(--text);
-              background: var(--panel);
-              padding: 0 12px;
+              background:
+                linear-gradient(45deg, transparent 50%, var(--muted) 50%) right 16px center / 7px 7px no-repeat,
+                linear-gradient(135deg, var(--panel), color-mix(in srgb, var(--panel-strong) 58%, var(--panel)));
+              padding: 0 36px 0 12px;
               font-size: 14px;
-              font-weight: 650;
+              font-weight: 760;
+            }
+            select:focus,
+            input:focus {
+              outline: 0;
+              border-color: color-mix(in srgb, var(--accent) 62%, var(--line));
             }
             .metric-grid {
               display: grid;
@@ -6562,15 +6768,15 @@ private enum SettingsPage {
               display: inline-flex;
               align-items: center;
               justify-content: center;
-              min-height: 34px;
-              border-radius: var(--radius);
-              padding: 0 12px;
-              border: 1px solid var(--line);
-              color: var(--text);
-              background: var(--panel);
+              min-height: 38px;
+              border-radius: calc(var(--radius) - 2px);
+              padding: 0 14px;
+              border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--line));
+              color: #071015;
+              background: linear-gradient(135deg, var(--accent), var(--accent-2));
               text-decoration: none;
               font-size: 13px;
-              font-weight: 700;
+              font-weight: 820;
             }
             .notice {
               border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--line));
