@@ -13,7 +13,7 @@
 
 NorthStar is a small native macOS browser built with Swift, AppKit, and Apple's WebKit. It is meant to be fast to understand, easy to extend, and useful as a foundation for experimenting with browser UX, private sessions, proxy-backed browsing, and local development workflows.
 
-The first version keeps the surface intentionally focused: one window, a polished NorthStar home screen, movable tabs, a smart address bar, browser navigation controls, settings, theme selection, search engine selection, and a per-tab network selector.
+The first version keeps the surface intentionally focused: one window, a polished Russian-language NorthStar home screen, movable tabs, a smart address bar, browser navigation controls, a settings tab, theme selection, search engine selection, history, download history, and a per-tab network selector.
 
 ## Highlights
 
@@ -24,6 +24,8 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Smart address bar that accepts URLs, localhost addresses, file URLs, or search text.
 - Search engine picker in the toolbar, on the home screen, and in Settings.
 - Built-in engines: DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
+- Settings open as a first-class internal tab instead of a modal sheet.
+- Browsing history and download history are available from the Settings tab.
 - Always-on ad blocking with WebKit content rules, host blocking, and DOM cleanup for injected ad containers.
 - Safari-like user agent to reduce search-engine bot challenges from custom WebKit fingerprints.
 - Theme picker for System, Light, and Dark.
@@ -33,7 +35,7 @@ The first version keeps the surface intentionally focused: one window, a polishe
 
 ## Settings
 
-Open settings with `Command-,` or the gear button in the toolbar.
+Open settings with `Command-,`, the gear button in the toolbar, or `northstar://settings` in the address bar.
 
 | Setting | Options |
 | --- | --- |
@@ -44,6 +46,8 @@ Open settings with `Command-,` or the gear button in the toolbar.
 Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, and tab layout between launches.
 
 You can also switch the search engine directly from the toolbar or from the NorthStar home screen before running a search.
+
+The Settings tab also includes browsing history, download history, and quick clear actions for both lists.
 
 ## Network Modes
 
@@ -151,14 +155,14 @@ Core pieces:
 - `BrowserViewController` owns the window UI, active tab state, navigation actions, and WebKit delegates.
 - `BrowserTab` wraps a `WKWebView` and observes title, URL, progress, loading, and history state.
 - `AppPreferences` stores theme, search engine, and tab placement in `UserDefaults`.
+- `BrowserHistoryStore` and `DownloadHistoryStore` persist local history lists in `UserDefaults`.
 - `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
 - `AdBlocker` installs WebKit content rules, blocks known ad hosts, and removes visible ad containers.
 - `NetworkPolicy` blocks disallowed URLs in Localhost mode.
 
 ## Roadmap
 
-- Bookmarks and history UI.
-- Downloads with progress.
+- Bookmarks UI.
 - Find in page.
 - Per-site permissions.
 - Optional custom SOCKS/HTTP proxy settings.

@@ -3,8 +3,10 @@ import Network
 import WebKit
 
 private let appName = "NorthStar"
+private let settingsTitle = "Настройки"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
+private let northStarSettingsScheme = "northstar-settings"
 
 @main
 private enum NorthStarApplication {
@@ -89,8 +91,8 @@ private final class BrowserViewController: NSViewController {
 
     private let tabBarView = NSVisualEffectView()
     private let tabBarHeaderView = NSView()
-    private let tabBarTitle = NSTextField(labelWithString: "Tabs")
-    private let newTabButton = IconButton(symbolName: "plus", tooltip: "New Tab", width: 30, height: 28)
+    private let tabBarTitle = NSTextField(labelWithString: "Вкладки")
+    private let newTabButton = IconButton(symbolName: "plus", tooltip: "Новая вкладка", width: 30, height: 28)
     private let tabScrollView = NSScrollView()
     private let tabStack = FlippedStackView()
 
@@ -99,11 +101,11 @@ private final class BrowserViewController: NSViewController {
     private let brandTitleField = NSTextField(labelWithString: appName)
     private let webContainerView = NSView()
 
-    private let backButton = IconButton(symbolName: "chevron.left", tooltip: "Back")
-    private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Forward")
-    private let homeButton = IconButton(symbolName: "house", tooltip: "Home")
-    private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Reload")
-    private let settingsButton = IconButton(symbolName: "gearshape", tooltip: "Settings")
+    private let backButton = IconButton(symbolName: "chevron.left", tooltip: "Назад")
+    private let forwardButton = IconButton(symbolName: "chevron.right", tooltip: "Вперёд")
+    private let homeButton = IconButton(symbolName: "house", tooltip: "Домой")
+    private let reloadButton = IconButton(symbolName: "arrow.clockwise", tooltip: "Обновить")
+    private let settingsButton = IconButton(symbolName: "gearshape", tooltip: settingsTitle)
     private let addressField = NSTextField()
     private let searchEnginePopup = NSPopUpButton(frame: .zero, pullsDown: false)
     private let networkPopup = NSPopUpButton(frame: .zero, pullsDown: false)
@@ -112,6 +114,7 @@ private final class BrowserViewController: NSViewController {
     private var placementConstraints: [NSLayoutConstraint] = []
     private var tabBarContentConstraints: [NSLayoutConstraint] = []
     private var tabStackCrossAxisConstraint: NSLayoutConstraint?
+    private var activeDownloads: [ObjectIdentifier: UUID] = [:]
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
 
@@ -175,6 +178,8 @@ private final class BrowserViewController: NSViewController {
             tab.webView.stopLoading()
         } else if tab.isShowingHome {
             showHome(in: tab)
+        } else if tab.isShowingSettings {
+            showSettings(in: tab)
         } else {
             tab.webView.reload()
         }
@@ -186,8 +191,7 @@ private final class BrowserViewController: NSViewController {
     }
 
     @objc func showSettingsCommand(_ sender: Any?) {
-        let controller = SettingsViewController(preferences: preferences)
-        presentAsSheet(controller)
+        openSettingsTab()
     }
 
     @objc private func goHome(_ sender: Any?) {
@@ -295,7 +299,7 @@ private final class BrowserViewController: NSViewController {
         addressField.bezelStyle = .roundedBezel
         addressField.font = .systemFont(ofSize: 14)
         addressField.lineBreakMode = .byTruncatingMiddle
-        addressField.placeholderString = "Search or enter website"
+        addressField.placeholderString = "Поиск или адрес сайта"
         addressField.target = self
         addressField.action = #selector(loadTypedAddress(_:))
 
@@ -304,7 +308,7 @@ private final class BrowserViewController: NSViewController {
         searchEnginePopup.font = .systemFont(ofSize: 13)
         searchEnginePopup.target = self
         searchEnginePopup.action = #selector(searchEngineSelectionChanged(_:))
-        searchEnginePopup.toolTip = "Search Engine"
+        searchEnginePopup.toolTip = "Поисковая система"
         searchEnginePopup.removeAllItems()
         searchEnginePopup.addItems(withTitles: SearchEngine.allCases.map(\.title))
 
@@ -313,7 +317,7 @@ private final class BrowserViewController: NSViewController {
         networkPopup.font = .systemFont(ofSize: 13)
         networkPopup.target = self
         networkPopup.action = #selector(networkSelectionChanged(_:))
-        networkPopup.toolTip = "Network"
+        networkPopup.toolTip = "Сеть"
         networkPopup.removeAllItems()
         networkPopup.addItems(withTitles: NetworkProfile.allCases.map(\.title))
 
@@ -410,6 +414,7 @@ private final class BrowserViewController: NSViewController {
 
         if redrawHomeTabs {
             tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
+            refreshSettingsTabs()
         }
 
         renderTabs()
@@ -489,7 +494,7 @@ private final class BrowserViewController: NSViewController {
 
         let isHorizontal = placement.isHorizontal
         tabBarTitle.isHidden = false
-        tabBarTitle.stringValue = placement == .top ? appName : "Tabs"
+        tabBarTitle.stringValue = placement == .top ? appName : "Вкладки"
         tabStack.orientation = isHorizontal ? .horizontal : .vertical
         tabStack.alignment = isHorizontal ? .height : .width
         tabStack.edgeInsets = isHorizontal
@@ -581,7 +586,8 @@ private final class BrowserViewController: NSViewController {
             return
         }
 
-        let targetURL = oldTab.isShowingHome ? nil : oldTab.url ?? oldTab.webView.url
+        let wasShowingSettings = oldTab.isShowingSettings
+        let targetURL = oldTab.isShowingHome || oldTab.isShowingSettings ? nil : oldTab.url ?? oldTab.webView.url
         let newTab = makeTab(profile: profile)
 
         oldTab.close()
@@ -596,7 +602,9 @@ private final class BrowserViewController: NSViewController {
         renderTabs()
         syncToolbar()
 
-        if let targetURL, NetworkPolicy.allows(targetURL, profile: profile) {
+        if wasShowingSettings {
+            showSettings(in: newTab)
+        } else if let targetURL, NetworkPolicy.allows(targetURL, profile: profile) {
             load(targetURL, in: newTab)
         } else {
             showHome(in: newTab)
@@ -707,6 +715,38 @@ private final class BrowserViewController: NSViewController {
         tab.loadHomePage(searchEngine: preferences.searchEngine, theme: preferences.theme)
     }
 
+    private func openSettingsTab() {
+        if let existingTab = tabs.first(where: \.isShowingSettings) {
+            activeTabID = existingTab.id
+            showActiveTab()
+            showSettings(in: existingTab)
+            renderTabs()
+            syncToolbar()
+            return
+        }
+
+        let tab = makeTab(profile: activeTab?.profile ?? .system)
+        tabs.append(tab)
+        activeTabID = tab.id
+        showActiveTab()
+        renderTabs()
+        syncToolbar()
+        showSettings(in: tab)
+    }
+
+    private func showSettings(in tab: BrowserTab) {
+        tab.loadSettingsPage(
+            preferences: preferences,
+            history: BrowserHistoryStore.shared.entries,
+            downloads: DownloadHistoryStore.shared.entries,
+            theme: preferences.theme
+        )
+    }
+
+    private func refreshSettingsTabs() {
+        tabs.filter(\.isShowingSettings).forEach { showSettings(in: $0) }
+    }
+
     private func load(_ url: URL, in tab: BrowserTab) {
         if AdBlocker.shouldBlock(url) {
             return
@@ -746,6 +786,55 @@ private final class BrowserViewController: NSViewController {
         load(targetURL, in: tab)
     }
 
+    private func handleInternalSettingsURL(_ url: URL, in tab: BrowserTab) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            showSettings(in: tab)
+            return
+        }
+
+        let action = url.host(percentEncoded: false) ?? ""
+        let queryItems = components.queryItems ?? []
+
+        switch action {
+        case "update":
+            if let identifier = queryItems.first(where: { $0.name == "search" })?.value,
+               let searchEngine = SearchEngine(identifier: identifier),
+               searchEngine != preferences.searchEngine {
+                preferences.searchEngine = searchEngine
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "tabs" })?.value,
+               let placement = TabPlacement(identifier: identifier),
+               placement != preferences.tabPlacement {
+                preferences.tabPlacement = placement
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "theme" })?.value,
+               let theme = ThemeMode(identifier: identifier),
+               theme != preferences.theme {
+                preferences.theme = theme
+            }
+
+            showSettings(in: tab)
+        case "open":
+            guard let rawURL = queryItems.first(where: { $0.name == "url" })?.value,
+                  let targetURL = URL(string: rawURL) else {
+                showSettings(in: tab)
+                return
+            }
+
+            load(targetURL, in: tab)
+        case "clear-history":
+            BrowserHistoryStore.shared.clear()
+            refreshSettingsTabs()
+        case "clear-downloads":
+            DownloadHistoryStore.shared.clear()
+            refreshSettingsTabs()
+        default:
+            showSettings(in: tab)
+        }
+    }
+
     private func syncToolbar() {
         guard let tab = activeTab else {
             backButton.isEnabled = false
@@ -761,15 +850,21 @@ private final class BrowserViewController: NSViewController {
         reloadButton.isEnabled = true
 
         let reloadSymbol = tab.webView.isLoading ? "xmark" : "arrow.clockwise"
-        reloadButton.image = NSImage(systemSymbolName: reloadSymbol, accessibilityDescription: tab.webView.isLoading ? "Stop" : "Reload")
-        reloadButton.toolTip = tab.webView.isLoading ? "Stop" : "Reload"
+        reloadButton.image = NSImage(systemSymbolName: reloadSymbol, accessibilityDescription: tab.webView.isLoading ? "Остановить" : "Обновить")
+        reloadButton.toolTip = tab.webView.isLoading ? "Остановить" : "Обновить"
 
         if !isEditingAddress {
-            addressField.stringValue = tab.isShowingHome ? "" : tab.url?.absoluteString ?? tab.webView.url?.absoluteString ?? ""
+            if tab.isShowingHome {
+                addressField.stringValue = ""
+            } else if tab.isShowingSettings {
+                addressField.stringValue = "northstar://settings"
+            } else {
+                addressField.stringValue = tab.url?.absoluteString ?? tab.webView.url?.absoluteString ?? ""
+            }
         }
 
         progressIndicator.doubleValue = tab.progress
-        progressIndicator.isHidden = tab.isShowingHome || !tab.webView.isLoading || tab.progress >= 1
+        progressIndicator.isHidden = tab.isShowingHome || tab.isShowingSettings || !tab.webView.isLoading || tab.progress >= 1
 
         if let profileIndex = NetworkProfile.allCases.firstIndex(of: tab.profile) {
             networkPopup.selectItem(at: profileIndex)
@@ -792,8 +887,8 @@ private final class BrowserViewController: NSViewController {
 
     private func showBlockedURL(_ url: URL, profile: NetworkProfile) {
         let alert = NSAlert()
-        alert.messageText = "Navigation blocked"
-        alert.informativeText = "\(profile.title) does not allow \(url.absoluteString)."
+        alert.messageText = "Переход заблокирован"
+        alert.informativeText = "Режим «\(profile.title)» не разрешает открыть \(url.absoluteString)."
         alert.alertStyle = .warning
 
         if let window = view.window {
@@ -808,7 +903,7 @@ private final class BrowserViewController: NSViewController {
         guard nsError.code != NSURLErrorCancelled else { return }
 
         let alert = NSAlert(error: error)
-        alert.messageText = "Could not load page"
+        alert.messageText = "Не удалось загрузить страницу"
 
         if let window = view.window {
             alert.beginSheetModal(for: window)
@@ -825,7 +920,18 @@ extension BrowserViewController: WKNavigationDelegate {
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-        tab(for: webView)?.syncFromWebView()
+        guard let tab = tab(for: webView) else {
+            syncToolbar()
+            return
+        }
+
+        tab.syncFromWebView()
+        if !tab.isShowingHome && !tab.isShowingSettings,
+           let currentURL = tab.url ?? webView.url {
+            BrowserHistoryStore.shared.record(url: currentURL, title: tab.displayTitle)
+            refreshSettingsTabs()
+        }
+
         syncToolbar()
     }
 
@@ -855,6 +961,14 @@ extension BrowserViewController: WKNavigationDelegate {
             return
         }
 
+        if url.scheme?.lowercased() == northStarSettingsScheme {
+            if let tab = tab(for: webView) {
+                handleInternalSettingsURL(url, in: tab)
+            }
+            decisionHandler(.cancel)
+            return
+        }
+
         if AdBlocker.shouldBlock(url) {
             decisionHandler(.cancel)
             return
@@ -879,6 +993,28 @@ extension BrowserViewController: WKNavigationDelegate {
 
         decisionHandler(.allow)
     }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        if let url = navigationResponse.response.url, AdBlocker.shouldBlock(url) {
+            decisionHandler(.cancel)
+            return
+        }
+
+        if !navigationResponse.canShowMIMEType {
+            decisionHandler(.download)
+            return
+        }
+
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+        download.delegate = self
+    }
+
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+        download.delegate = self
+    }
 }
 
 extension BrowserViewController: WKUIDelegate {
@@ -896,6 +1032,34 @@ extension BrowserViewController: WKUIDelegate {
     }
 }
 
+extension BrowserViewController: WKDownloadDelegate {
+    func download(_ download: WKDownload, decideDestinationUsing response: URLResponse, suggestedFilename: String, completionHandler: @escaping (URL?) -> Void) {
+        let destinationURL = DownloadPath.uniqueDestination(for: suggestedFilename)
+        let id = DownloadHistoryStore.shared.start(
+            fileName: destinationURL.lastPathComponent,
+            sourceURL: response.url,
+            destinationURL: destinationURL
+        )
+        activeDownloads[ObjectIdentifier(download)] = id
+        refreshSettingsTabs()
+        completionHandler(destinationURL)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {
+        if let id = activeDownloads.removeValue(forKey: ObjectIdentifier(download)) {
+            DownloadHistoryStore.shared.finish(id: id)
+            refreshSettingsTabs()
+        }
+    }
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+        if let id = activeDownloads.removeValue(forKey: ObjectIdentifier(download)) {
+            DownloadHistoryStore.shared.fail(id: id, error: error.localizedDescription)
+            refreshSettingsTabs()
+        }
+    }
+}
+
 @MainActor
 private final class BrowserTab {
     let id = UUID()
@@ -907,9 +1071,14 @@ private final class BrowserTab {
     private(set) var url: URL?
     private(set) var progress = 1.0
     private(set) var isShowingHome = true
+    private(set) var isShowingSettings = false
     private var observations: [NSKeyValueObservation] = []
 
     var displayTitle: String {
+        if isShowingSettings {
+            return settingsTitle
+        }
+
         if isShowingHome {
             return appName
         }
@@ -922,7 +1091,7 @@ private final class BrowserTab {
             return host
         }
 
-        return "New Tab"
+        return "Новая вкладка"
     }
 
     init(profile: NetworkProfile) {
@@ -937,6 +1106,7 @@ private final class BrowserTab {
 
     func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode) {
         isShowingHome = true
+        isShowingSettings = false
         title = appName
         url = nil
         progress = 1
@@ -944,10 +1114,21 @@ private final class BrowserTab {
         webView.loadHTMLString(HomePage.html(searchEngine: searchEngine, theme: theme), baseURL: nil)
     }
 
+    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], theme: ThemeMode) {
+        isShowingHome = false
+        isShowingSettings = true
+        title = settingsTitle
+        url = nil
+        progress = 1
+        notifyChanged()
+        webView.loadHTMLString(SettingsPage.html(preferences: preferences, history: history, downloads: downloads, theme: theme), baseURL: nil)
+    }
+
     func load(_ url: URL) {
         isShowingHome = false
+        isShowingSettings = false
         self.url = url
-        title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Loading"
+        title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Загрузка"
         progress = 0
         notifyChanged()
         webView.load(URLRequest(url: url))
@@ -964,9 +1145,12 @@ private final class BrowserTab {
         if isShowingHome {
             title = appName
             progress = webView.isLoading ? webView.estimatedProgress : 1
+        } else if isShowingSettings {
+            title = settingsTitle
+            progress = webView.isLoading ? webView.estimatedProgress : 1
         } else {
             url = webView.url ?? url
-            title = Self.normalizedTitle(webView.title) ?? Self.normalizedTitle(url?.host(percentEncoded: false)) ?? "New Tab"
+            title = Self.normalizedTitle(webView.title) ?? Self.normalizedTitle(url?.host(percentEncoded: false)) ?? "Новая вкладка"
             progress = webView.estimatedProgress
         }
 
@@ -984,7 +1168,7 @@ private final class BrowserTab {
             webView.observe(\.url, options: [.initial, .new]) { [weak self] webView, _ in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    if !self.isShowingHome {
+                    if !self.isShowingHome && !self.isShowingSettings {
                         self.url = webView.url
                     }
                     self.notifyChanged()
@@ -993,7 +1177,13 @@ private final class BrowserTab {
             webView.observe(\.title, options: [.initial, .new]) { [weak self] webView, _ in
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    self.title = self.isShowingHome ? appName : Self.normalizedTitle(webView.title) ?? self.title
+                    if self.isShowingHome {
+                        self.title = appName
+                    } else if self.isShowingSettings {
+                        self.title = settingsTitle
+                    } else {
+                        self.title = Self.normalizedTitle(webView.title) ?? self.title
+                    }
                     self.notifyChanged()
                 }
             },
@@ -1022,119 +1212,6 @@ private final class BrowserTab {
     private static func normalizedTitle(_ title: String?) -> String? {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
-    }
-}
-
-@MainActor
-private final class SettingsViewController: NSViewController {
-    private let preferences: AppPreferences
-    private let searchPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let tabPlacementPopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let themePopup = NSPopUpButton(frame: .zero, pullsDown: false)
-    private let doneButton = NSButton(title: "Done", target: nil, action: nil)
-
-    init(preferences: AppPreferences) {
-        self.preferences = preferences
-        super.init(nibName: nil, bundle: nil)
-        preferredContentSize = NSSize(width: 440, height: 254)
-    }
-
-    required init?(coder: NSCoder) {
-        nil
-    }
-
-    override func loadView() {
-        view = NSView(frame: NSRect(origin: .zero, size: preferredContentSize))
-        view.wantsLayer = true
-        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-    }
-
-    override func viewDidLoad() {
-        super.viewDidLoad()
-
-        let title = NSTextField(labelWithString: "Settings")
-        title.translatesAutoresizingMaskIntoConstraints = false
-        title.font = .systemFont(ofSize: 22, weight: .bold)
-
-        let stack = NSStackView()
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        stack.orientation = .vertical
-        stack.spacing = 14
-
-        configurePopup(searchPopup, titles: SearchEngine.allCases.map(\.title), selectedIndex: preferences.searchEngine.rawValue, action: #selector(searchChanged(_:)))
-        configurePopup(tabPlacementPopup, titles: TabPlacement.allCases.map(\.title), selectedIndex: preferences.tabPlacement.rawValue, action: #selector(tabPlacementChanged(_:)))
-        configurePopup(themePopup, titles: ThemeMode.allCases.map(\.title), selectedIndex: preferences.theme.rawValue, action: #selector(themeChanged(_:)))
-
-        stack.addArrangedSubview(settingsRow(label: "Search engine", control: searchPopup))
-        stack.addArrangedSubview(settingsRow(label: "Tabs position", control: tabPlacementPopup))
-        stack.addArrangedSubview(settingsRow(label: "Theme", control: themePopup))
-
-        doneButton.translatesAutoresizingMaskIntoConstraints = false
-        doneButton.bezelStyle = .rounded
-        doneButton.target = self
-        doneButton.action = #selector(done(_:))
-
-        view.addSubview(title)
-        view.addSubview(stack)
-        view.addSubview(doneButton)
-
-        NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: view.topAnchor, constant: 24),
-            title.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
-            title.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
-
-            stack.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 22),
-            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 28),
-            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
-
-            doneButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -28),
-            doneButton.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -24),
-            doneButton.widthAnchor.constraint(equalToConstant: 88)
-        ])
-    }
-
-    private func configurePopup(_ popup: NSPopUpButton, titles: [String], selectedIndex: Int, action: Selector) {
-        popup.translatesAutoresizingMaskIntoConstraints = false
-        popup.removeAllItems()
-        popup.addItems(withTitles: titles)
-        popup.selectItem(at: selectedIndex)
-        popup.target = self
-        popup.action = action
-        popup.widthAnchor.constraint(equalToConstant: 190).isActive = true
-    }
-
-    private func settingsRow(label: String, control: NSView) -> NSView {
-        let row = NSStackView()
-        row.translatesAutoresizingMaskIntoConstraints = false
-        row.orientation = .horizontal
-        row.alignment = .centerY
-        row.spacing = 18
-
-        let labelField = NSTextField(labelWithString: label)
-        labelField.translatesAutoresizingMaskIntoConstraints = false
-        labelField.font = .systemFont(ofSize: 13, weight: .medium)
-        labelField.widthAnchor.constraint(equalToConstant: 142).isActive = true
-
-        row.addArrangedSubview(labelField)
-        row.addArrangedSubview(control)
-        return row
-    }
-
-    @objc private func searchChanged(_ sender: Any?) {
-        preferences.searchEngine = SearchEngine(rawValue: searchPopup.indexOfSelectedItem) ?? .duckDuckGo
-    }
-
-    @objc private func tabPlacementChanged(_ sender: Any?) {
-        preferences.tabPlacement = TabPlacement(rawValue: tabPlacementPopup.indexOfSelectedItem) ?? .left
-    }
-
-    @objc private func themeChanged(_ sender: Any?) {
-        preferences.theme = ThemeMode(rawValue: themePopup.indexOfSelectedItem) ?? .system
-    }
-
-    @objc private func done(_ sender: Any?) {
-        guard let window = view.window else { return }
-        window.sheetParent?.endSheet(window)
     }
 }
 
@@ -1174,6 +1251,223 @@ private final class AppPreferences {
     }
 }
 
+private struct BrowserHistoryEntry: Codable {
+    let id: UUID
+    var title: String
+    var url: String
+    var date: Date
+}
+
+private final class BrowserHistoryStore {
+    static let shared = BrowserHistoryStore()
+
+    private(set) var entries: [BrowserHistoryEntry]
+    private let defaults = UserDefaults.standard
+    private let key = "browserHistoryEntries"
+    private let maximumEntries = 200
+
+    private init() {
+        entries = Self.loadEntries(defaults: defaults, key: key)
+    }
+
+    func record(url: URL, title: String) {
+        guard let scheme = url.scheme?.lowercased(),
+              ["http", "https", "file"].contains(scheme) else {
+            return
+        }
+
+        let urlString = url.absoluteString
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        entries.removeAll { $0.url == urlString }
+        entries.insert(
+            BrowserHistoryEntry(
+                id: UUID(),
+                title: cleanTitle.isEmpty ? urlString : cleanTitle,
+                url: urlString,
+                date: Date()
+            ),
+            at: 0
+        )
+
+        if entries.count > maximumEntries {
+            entries.removeLast(entries.count - maximumEntries)
+        }
+
+        save()
+    }
+
+    func clear() {
+        entries.removeAll()
+        save()
+    }
+
+    private func save() {
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    private static func loadEntries(defaults: UserDefaults, key: String) -> [BrowserHistoryEntry] {
+        guard let data = defaults.data(forKey: key),
+              let entries = try? JSONDecoder().decode([BrowserHistoryEntry].self, from: data) else {
+            return []
+        }
+
+        return entries
+    }
+}
+
+private enum DownloadStatus: String, Codable {
+    case inProgress
+    case completed
+    case failed
+
+    var title: String {
+        switch self {
+        case .inProgress:
+            return "Загружается"
+        case .completed:
+            return "Готово"
+        case .failed:
+            return "Ошибка"
+        }
+    }
+}
+
+private struct DownloadHistoryEntry: Codable {
+    let id: UUID
+    var fileName: String
+    var sourceURL: String
+    var destinationPath: String
+    var date: Date
+    var status: DownloadStatus
+    var errorMessage: String?
+}
+
+private final class DownloadHistoryStore {
+    static let shared = DownloadHistoryStore()
+
+    private(set) var entries: [DownloadHistoryEntry]
+    private let defaults = UserDefaults.standard
+    private let key = "downloadHistoryEntries"
+    private let maximumEntries = 200
+
+    private init() {
+        entries = Self.loadEntries(defaults: defaults, key: key)
+    }
+
+    func start(fileName: String, sourceURL: URL?, destinationURL: URL) -> UUID {
+        let id = UUID()
+        entries.insert(
+            DownloadHistoryEntry(
+                id: id,
+                fileName: fileName,
+                sourceURL: sourceURL?.absoluteString ?? "Неизвестный источник",
+                destinationPath: destinationURL.path,
+                date: Date(),
+                status: .inProgress,
+                errorMessage: nil
+            ),
+            at: 0
+        )
+
+        if entries.count > maximumEntries {
+            entries.removeLast(entries.count - maximumEntries)
+        }
+
+        save()
+        return id
+    }
+
+    func finish(id: UUID) {
+        update(id: id) { entry in
+            entry.status = .completed
+            entry.errorMessage = nil
+        }
+    }
+
+    func fail(id: UUID, error: String) {
+        update(id: id) { entry in
+            entry.status = .failed
+            entry.errorMessage = error
+        }
+    }
+
+    func clear() {
+        entries.removeAll()
+        save()
+    }
+
+    private func update(id: UUID, mutate: (inout DownloadHistoryEntry) -> Void) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        mutate(&entries[index])
+        save()
+    }
+
+    private func save() {
+        guard let data = try? JSONEncoder().encode(entries) else { return }
+        defaults.set(data, forKey: key)
+    }
+
+    private static func loadEntries(defaults: UserDefaults, key: String) -> [DownloadHistoryEntry] {
+        guard let data = defaults.data(forKey: key),
+              let entries = try? JSONDecoder().decode([DownloadHistoryEntry].self, from: data) else {
+            return []
+        }
+
+        return entries
+    }
+}
+
+private enum DownloadPath {
+    static func uniqueDestination(for suggestedFilename: String) -> URL {
+        let downloadsDirectory = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser
+        let fallbackName = "download-\(Int(Date().timeIntervalSince1970))"
+        let sanitizedName = sanitize(suggestedFilename.isEmpty ? fallbackName : suggestedFilename)
+        let baseURL = downloadsDirectory.appendingPathComponent(sanitizedName)
+
+        guard FileManager.default.fileExists(atPath: baseURL.path) else {
+            return baseURL
+        }
+
+        let fileExtension = baseURL.pathExtension
+        let stem = fileExtension.isEmpty
+            ? baseURL.lastPathComponent
+            : baseURL.deletingPathExtension().lastPathComponent
+
+        for index in 2...999 {
+            let candidateName = fileExtension.isEmpty
+                ? "\(stem) \(index)"
+                : "\(stem) \(index).\(fileExtension)"
+            let candidateURL = downloadsDirectory.appendingPathComponent(candidateName)
+            if !FileManager.default.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+        }
+
+        return downloadsDirectory.appendingPathComponent("\(UUID().uuidString)-\(sanitizedName)")
+    }
+
+    private static func sanitize(_ filename: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/:")
+        let cleaned = filename
+            .components(separatedBy: invalidCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return cleaned.isEmpty ? "download" : cleaned
+    }
+}
+
+private enum DateDisplay {
+    static func string(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
 private enum TabPlacement: Int, CaseIterable {
     case left
     case top
@@ -1183,14 +1477,36 @@ private enum TabPlacement: Int, CaseIterable {
     var title: String {
         switch self {
         case .left:
-            return "Left"
+            return "Слева"
         case .top:
-            return "Top"
+            return "Сверху"
         case .right:
-            return "Right"
+            return "Справа"
         case .bottom:
-            return "Bottom"
+            return "Снизу"
         }
+    }
+
+    var identifier: String {
+        switch self {
+        case .left:
+            return "left"
+        case .top:
+            return "top"
+        case .right:
+            return "right"
+        case .bottom:
+            return "bottom"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let placement = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = placement
     }
 
     var isHorizontal: Bool {
@@ -1206,12 +1522,32 @@ private enum ThemeMode: Int, CaseIterable {
     var title: String {
         switch self {
         case .system:
-            return "System"
+            return "Системная"
         case .light:
-            return "Light"
+            return "Светлая"
         case .dark:
-            return "Dark"
+            return "Тёмная"
         }
+    }
+
+    var identifier: String {
+        switch self {
+        case .system:
+            return "system"
+        case .light:
+            return "light"
+        case .dark:
+            return "dark"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let theme = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = theme
     }
 
     @MainActor
@@ -1341,26 +1677,26 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
     var title: String {
         switch self {
         case .system:
-            return "System"
+            return "Система"
         case .privateBrowsing:
-            return "Private"
+            return "Приватно"
         case .tor:
             return "Tor SOCKS"
         case .localhost:
-            return "Localhost"
+            return "Локально"
         }
     }
 
     var detail: String {
         switch self {
         case .system:
-            return "Default network"
+            return "Обычная сеть"
         case .privateBrowsing:
-            return "Private data"
+            return "Без сохранения"
         case .tor:
             return "127.0.0.1:9050"
         case .localhost:
-            return "Local only"
+            return "Только локально"
         }
     }
 
@@ -1645,6 +1981,10 @@ private enum NetworkPolicy {
             return true
         }
 
+        if [northStarSearchScheme, northStarSettingsScheme].contains(scheme) {
+            return true
+        }
+
         guard ["http", "https"].contains(scheme) else {
             return false
         }
@@ -1671,9 +2011,9 @@ private final class TabRowView: NSView {
     var onClose: (() -> Void)?
 
     private let indicatorView = NSView()
-    private let titleField = NSTextField(labelWithString: "New Tab")
+    private let titleField = NSTextField(labelWithString: "Новая вкладка")
     private let detailField = NSTextField(labelWithString: "")
-    private let closeButton = IconButton(symbolName: "xmark", tooltip: "Close Tab", width: 24, height: 22)
+    private let closeButton = IconButton(symbolName: "xmark", tooltip: "Закрыть вкладку", width: 24, height: 22)
     private var isActive = false
     private var heightConstraint: NSLayoutConstraint?
     private var titleTopConstraint: NSLayoutConstraint?
@@ -1806,6 +2146,14 @@ private enum URLParser {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
+        let normalized = trimmed.lowercased()
+        if normalized == "northstar://settings"
+            || normalized == "\(northStarSettingsScheme)://home"
+            || normalized == "settings"
+            || normalized == "настройки" {
+            return URL(string: "\(northStarSettingsScheme)://home")
+        }
+
         if let directURL = URL(string: trimmed),
            let scheme = directURL.scheme?.lowercased(),
            ["http", "https", "file"].contains(scheme) {
@@ -1856,7 +2204,7 @@ private enum HomePage {
 
         return """
         <!doctype html>
-        <html lang="en">
+        <html lang="ru">
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -1995,21 +2343,21 @@ private enum HomePage {
             <section class="mast" aria-label="NorthStar">
               <h1>\(appName)</h1>
               <div class="line"></div>
-              <p class="sub">Search, open a site, or start from a familiar place.</p>
+              <p class="sub">Ищите, открывайте сайты или начинайте с привычных мест.</p>
             </section>
             <form class="search" id="searchForm">
-              <input id="query" name="q" autofocus autocomplete="off" placeholder="Search or enter website">
-              <select id="engine" name="engine" aria-label="Search engine">
+              <input id="query" name="q" autofocus autocomplete="off" placeholder="Поиск или адрес сайта">
+              <select id="engine" name="engine" aria-label="Поисковая система">
                 \(engineOptions)
               </select>
-              <button type="submit">Go</button>
+              <button type="submit">Открыть</button>
             </form>
-            <div class="engine">Current search engine: \(engine)</div>
-            <nav class="quick" aria-label="Quick links">
+            <div class="engine">Текущая поисковая система: \(engine)</div>
+            <nav class="quick" aria-label="Быстрые ссылки">
               <a href="https://github.com">GitHub</a>
               <a href="https://news.ycombinator.com">Hacker News</a>
               <a href="https://developer.apple.com">Apple Dev</a>
-              <a href="http://localhost:3000">Localhost</a>
+              <a href="http://localhost:3000">Локальный сервер</a>
             </nav>
           </main>
           <script>
@@ -2024,6 +2372,273 @@ private enum HomePage {
               const value = query.value.trim();
               if (!value) return;
               window.location.href = "\(northStarSearchScheme)://search?q=" + encodeURIComponent(value) + "&engine=" + encodeURIComponent(engine.value);
+            });
+          </script>
+        </body>
+        </html>
+        """
+    }
+}
+
+private enum SettingsPage {
+    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], theme: ThemeMode) -> String {
+        let palette = HomePalette(theme: theme)
+        let searchOptions = SearchEngine.allCases.map { option in
+            let selected = option == preferences.searchEngine ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let tabOptions = TabPlacement.allCases.map { option in
+            let selected = option == preferences.tabPlacement ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+        let themeOptions = ThemeMode.allCases.map { option in
+            let selected = option == preferences.theme ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
+
+        let historyMarkup = history.prefix(60).map { entry in
+            let openURL = "\(northStarSettingsScheme)://open?url=\(entry.url.urlQueryEscaped)"
+            return """
+            <a class="list-row" href="\(openURL)">
+              <span class="row-main">
+                <strong>\(entry.title.htmlEscaped)</strong>
+                <small>\(entry.url.htmlEscaped)</small>
+              </span>
+              <time>\(DateDisplay.string(from: entry.date).htmlEscaped)</time>
+            </a>
+            """
+        }.joined()
+
+        let downloadsMarkup = downloads.prefix(60).map { entry in
+            let error = entry.errorMessage.map { "<small>\($0.htmlEscaped)</small>" } ?? "<small>\(entry.destinationPath.htmlEscaped)</small>"
+            return """
+            <div class="list-row">
+              <span class="row-main">
+                <strong>\(entry.fileName.htmlEscaped)</strong>
+                \(error)
+              </span>
+              <span class="status \(entry.status.rawValue)">\(entry.status.title.htmlEscaped)</span>
+            </div>
+            """
+        }.joined()
+
+        return """
+        <!doctype html>
+        <html lang="ru">
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <title>\(settingsTitle)</title>
+          <style>
+            :root {
+              color-scheme: \(palette.colorScheme);
+              --bg: \(palette.background);
+              --panel: \(palette.panel);
+              --panel-strong: \(palette.panelStrong);
+              --text: \(palette.text);
+              --muted: \(palette.muted);
+              --line: \(palette.line);
+              --accent: \(palette.accent);
+              --accent-2: \(palette.accentTwo);
+              --shadow: \(palette.shadow);
+            }
+            * { box-sizing: border-box; }
+            html, body { margin: 0; min-height: 100%; }
+            body {
+              min-height: 100vh;
+              font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
+              color: var(--text);
+              background: linear-gradient(120deg, var(--bg), var(--panel-strong));
+            }
+            main {
+              width: min(1120px, calc(100vw - 56px));
+              margin: 0 auto;
+              padding: 40px 0 56px;
+              display: grid;
+              gap: 22px;
+            }
+            header {
+              display: flex;
+              justify-content: space-between;
+              gap: 18px;
+              align-items: end;
+              border-bottom: 1px solid var(--line);
+              padding-bottom: 18px;
+            }
+            h1, h2 { margin: 0; letter-spacing: 0; }
+            h1 { font-size: 38px; line-height: 1; }
+            h2 { font-size: 19px; }
+            .muted { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
+            .settings-grid {
+              display: grid;
+              grid-template-columns: repeat(3, minmax(0, 1fr));
+              gap: 12px;
+            }
+            label, .section-head {
+              display: grid;
+              gap: 8px;
+            }
+            label span {
+              color: var(--muted);
+              font-size: 12px;
+              font-weight: 700;
+              text-transform: uppercase;
+            }
+            select {
+              width: 100%;
+              min-width: 0;
+              min-height: 38px;
+              border-radius: 8px;
+              border: 1px solid var(--line);
+              color: var(--text);
+              background: var(--panel);
+              padding: 0 12px;
+              font-size: 14px;
+              font-weight: 650;
+            }
+            section {
+              display: grid;
+              gap: 12px;
+            }
+            .section-head {
+              grid-template-columns: minmax(0, 1fr) auto;
+              align-items: center;
+            }
+            .list {
+              display: grid;
+              gap: 8px;
+            }
+            .list-row {
+              min-height: 58px;
+              display: grid;
+              grid-template-columns: minmax(0, 1fr) auto;
+              gap: 18px;
+              align-items: center;
+              color: var(--text);
+              text-decoration: none;
+              border: 1px solid var(--line);
+              border-radius: 8px;
+              background: var(--panel);
+              padding: 12px 14px;
+              box-shadow: 0 14px 34px var(--shadow);
+            }
+            .list-row:hover {
+              border-color: color-mix(in srgb, var(--accent) 60%, var(--line));
+            }
+            .row-main {
+              min-width: 0;
+              display: grid;
+              gap: 4px;
+            }
+            strong, small, time {
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
+            }
+            strong { font-size: 14px; }
+            small, time { color: var(--muted); font-size: 12px; }
+            .empty {
+              color: var(--muted);
+              border: 1px dashed var(--line);
+              border-radius: 8px;
+              padding: 18px;
+              margin: 0;
+            }
+            .button {
+              display: inline-flex;
+              align-items: center;
+              justify-content: center;
+              min-height: 34px;
+              border-radius: 8px;
+              padding: 0 12px;
+              border: 1px solid var(--line);
+              color: var(--text);
+              background: var(--panel);
+              text-decoration: none;
+              font-size: 13px;
+              font-weight: 700;
+            }
+            .status {
+              border-radius: 999px;
+              padding: 5px 10px;
+              font-size: 12px;
+              font-weight: 750;
+              background: color-mix(in srgb, var(--accent) 18%, transparent);
+              color: var(--text);
+            }
+            .failed { background: rgba(255, 88, 88, 0.16); }
+            .inProgress { background: rgba(125, 184, 255, 0.18); }
+            @media (max-width: 760px) {
+              main { width: min(100vw - 28px, 1120px); padding-top: 26px; }
+              header, .section-head, .list-row { grid-template-columns: 1fr; }
+              header { align-items: start; }
+              .settings-grid { grid-template-columns: 1fr; }
+              time, .status { justify-self: start; }
+            }
+          </style>
+        </head>
+        <body>
+          <main>
+            <header>
+              <div>
+                <h1>\(settingsTitle)</h1>
+                <p class="muted">Минимальные параметры, история посещений и загрузки.</p>
+              </div>
+              <a class="button" href="\(northStarSettingsScheme)://clear-history">Очистить историю</a>
+            </header>
+
+            <section class="settings-grid" aria-label="Минимальные настройки">
+              <label>
+                <span>Поиск</span>
+                <select id="search">\(searchOptions)</select>
+              </label>
+              <label>
+                <span>Вкладки</span>
+                <select id="tabs">\(tabOptions)</select>
+              </label>
+              <label>
+                <span>Тема</span>
+                <select id="theme">\(themeOptions)</select>
+              </label>
+            </section>
+
+            <section aria-label="История посещений">
+              <div class="section-head">
+                <div>
+                  <h2>История посещений</h2>
+                  <p class="muted">Последние открытые страницы.</p>
+                </div>
+                <a class="button" href="\(northStarSettingsScheme)://clear-history">Очистить</a>
+              </div>
+              <div class="list">
+                \(historyMarkup.isEmpty ? "<p class=\"empty\">История пока пуста.</p>" : historyMarkup)
+              </div>
+            </section>
+
+            <section aria-label="История загрузок">
+              <div class="section-head">
+                <div>
+                  <h2>История загрузок</h2>
+                  <p class="muted">Файлы сохраняются в папку Загрузки.</p>
+                </div>
+                <a class="button" href="\(northStarSettingsScheme)://clear-downloads">Очистить</a>
+              </div>
+              <div class="list">
+                \(downloadsMarkup.isEmpty ? "<p class=\"empty\">Загрузок пока нет.</p>" : downloadsMarkup)
+              </div>
+            </section>
+          </main>
+          <script>
+            const update = () => {
+              const params = new URLSearchParams({
+                search: document.getElementById("search").value,
+                tabs: document.getElementById("tabs").value,
+                theme: document.getElementById("theme").value
+              });
+              window.location.href = "\(northStarSettingsScheme)://update?" + params.toString();
+            };
+            document.querySelectorAll("select").forEach(select => {
+              select.addEventListener("change", update);
             });
           </script>
         </body>
@@ -2091,6 +2706,12 @@ private extension String {
             .replacingOccurrences(of: "\"", with: "&quot;")
             .replacingOccurrences(of: "'", with: "&#39;")
     }
+
+    var urlQueryEscaped: String {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return addingPercentEncoding(withAllowedCharacters: allowed) ?? self
+    }
 }
 
 @MainActor
@@ -2099,53 +2720,53 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
 
     let appMenuItem = NSMenuItem()
     let appMenu = NSMenu(title: appName)
-    appMenu.addItem(withTitle: "About \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
-    appMenu.addItem(withTitle: "Settings...", action: #selector(BrowserViewController.showSettingsCommand(_:)), keyEquivalent: ",")
+    appMenu.addItem(withTitle: "О \(appName)", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+    appMenu.addItem(withTitle: "\(settingsTitle)...", action: #selector(BrowserViewController.showSettingsCommand(_:)), keyEquivalent: ",")
     appMenu.addItem(.separator())
-    appMenu.addItem(withTitle: "Quit \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    appMenu.addItem(withTitle: "Завершить \(appName)", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appMenuItem.submenu = appMenu
     mainMenu.addItem(appMenuItem)
 
     let fileItem = NSMenuItem()
-    let fileMenu = NSMenu(title: "File")
-    let newWindow = fileMenu.addItem(withTitle: "New Window", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
+    let fileMenu = NSMenu(title: "Файл")
+    let newWindow = fileMenu.addItem(withTitle: "Новое окно", action: #selector(AppDelegate.newWindow(_:)), keyEquivalent: "n")
     newWindow.target = appDelegate
-    fileMenu.addItem(withTitle: "New Tab", action: #selector(BrowserViewController.newTabCommand(_:)), keyEquivalent: "t")
-    fileMenu.addItem(withTitle: "Close Tab", action: #selector(BrowserViewController.closeTabCommand(_:)), keyEquivalent: "w")
-    let closeWindow = fileMenu.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+    fileMenu.addItem(withTitle: "Новая вкладка", action: #selector(BrowserViewController.newTabCommand(_:)), keyEquivalent: "t")
+    fileMenu.addItem(withTitle: "Закрыть вкладку", action: #selector(BrowserViewController.closeTabCommand(_:)), keyEquivalent: "w")
+    let closeWindow = fileMenu.addItem(withTitle: "Закрыть окно", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
     closeWindow.keyEquivalentModifierMask = [.command, .shift]
     fileItem.submenu = fileMenu
     mainMenu.addItem(fileItem)
 
     let editItem = NSMenuItem()
-    let editMenu = NSMenu(title: "Edit")
-    editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
-    editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+    let editMenu = NSMenu(title: "Правка")
+    editMenu.addItem(withTitle: "Отменить", action: Selector(("undo:")), keyEquivalent: "z")
+    editMenu.addItem(withTitle: "Повторить", action: Selector(("redo:")), keyEquivalent: "Z")
     editMenu.addItem(.separator())
-    editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-    editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
-    editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
-    editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editMenu.addItem(withTitle: "Вырезать", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    editMenu.addItem(withTitle: "Копировать", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    editMenu.addItem(withTitle: "Вставить", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    editMenu.addItem(withTitle: "Выбрать всё", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
     editItem.submenu = editMenu
     mainMenu.addItem(editItem)
 
     let viewItem = NSMenuItem()
-    let viewMenu = NSMenu(title: "View")
-    viewMenu.addItem(withTitle: "Back", action: #selector(BrowserViewController.goBackCommand(_:)), keyEquivalent: "[")
-    viewMenu.addItem(withTitle: "Forward", action: #selector(BrowserViewController.goForwardCommand(_:)), keyEquivalent: "]")
-    viewMenu.addItem(withTitle: "Reload", action: #selector(BrowserViewController.reloadCommand(_:)), keyEquivalent: "r")
+    let viewMenu = NSMenu(title: "Вид")
+    viewMenu.addItem(withTitle: "Назад", action: #selector(BrowserViewController.goBackCommand(_:)), keyEquivalent: "[")
+    viewMenu.addItem(withTitle: "Вперёд", action: #selector(BrowserViewController.goForwardCommand(_:)), keyEquivalent: "]")
+    viewMenu.addItem(withTitle: "Обновить", action: #selector(BrowserViewController.reloadCommand(_:)), keyEquivalent: "r")
     viewMenu.addItem(.separator())
-    viewMenu.addItem(withTitle: "Previous Tab", action: #selector(BrowserViewController.previousTabCommand(_:)), keyEquivalent: "{")
-    viewMenu.addItem(withTitle: "Next Tab", action: #selector(BrowserViewController.nextTabCommand(_:)), keyEquivalent: "}")
+    viewMenu.addItem(withTitle: "Предыдущая вкладка", action: #selector(BrowserViewController.previousTabCommand(_:)), keyEquivalent: "{")
+    viewMenu.addItem(withTitle: "Следующая вкладка", action: #selector(BrowserViewController.nextTabCommand(_:)), keyEquivalent: "}")
     viewMenu.addItem(.separator())
-    viewMenu.addItem(withTitle: "Focus Location", action: #selector(BrowserViewController.focusLocation(_:)), keyEquivalent: "l")
+    viewMenu.addItem(withTitle: "Фокус на адрес", action: #selector(BrowserViewController.focusLocation(_:)), keyEquivalent: "l")
     viewItem.submenu = viewMenu
     mainMenu.addItem(viewItem)
 
     let windowItem = NSMenuItem()
-    let windowMenu = NSMenu(title: "Window")
-    windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
-    windowMenu.addItem(withTitle: "Zoom", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
+    let windowMenu = NSMenu(title: "Окно")
+    windowMenu.addItem(withTitle: "Свернуть", action: #selector(NSWindow.miniaturize(_:)), keyEquivalent: "m")
+    windowMenu.addItem(withTitle: "Масштаб", action: #selector(NSWindow.zoom(_:)), keyEquivalent: "")
     windowItem.submenu = windowMenu
     mainMenu.addItem(windowItem)
     mainMenu.setSubmenu(windowMenu, for: windowItem)
