@@ -4550,10 +4550,21 @@ private enum AdBlocker {
           };
           const removeElement = element => {
             const target = targetFor(element);
-            if (target && (removableTags.has(target.tagName) || removableTags.has(element.tagName))) {
+            if (target && removableTags.has(target.tagName)) {
               target.remove();
             } else if (target) {
               hide(target);
+            } else {
+              hide(element);
+            }
+          };
+          const hideElement = element => {
+            const target = targetFor(element);
+            hide(target || element);
+          };
+          const removeResource = element => {
+            if (removableTags.has(element.tagName)) {
+              element.remove();
             } else {
               hide(element);
             }
@@ -4568,10 +4579,10 @@ private enum AdBlocker {
           const removeMatches = () => {
             ensureStyle();
             try {
-              document.querySelectorAll(selectorText).forEach(removeElement);
+              document.querySelectorAll(selectorText).forEach(hideElement);
             } catch (_) {}
             document.querySelectorAll("iframe,img,script,link,source,video,ins").forEach(element => {
-              if (hasResourceAdSignal(element)) removeElement(element);
+              if (hasResourceAdSignal(element)) removeResource(element);
             });
             document.querySelectorAll("a,picture,div,section,aside").forEach(element => {
               if (hasAdSignal(element)) removeElement(element);
