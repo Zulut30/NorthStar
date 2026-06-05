@@ -169,6 +169,12 @@ private final class BrowserViewController: NSViewController {
     private let toolbarSeparatorView = NSView()
     private let tabBarTintView = GradientTintView()
 
+    private let bookmarksBarView = NSVisualEffectView()
+    private let bookmarksBarScrollView = NSScrollView()
+    private let bookmarksBarStack = NSStackView()
+    private var bookmarksBarHeightConstraint: NSLayoutConstraint?
+    private var isBookmarksBarVisible = UserDefaults.standard.object(forKey: "northstar.bookmarksBar.visible") as? Bool ?? true
+
     private let findBarView = NSVisualEffectView()
     private let findField = NSSearchField()
     private let findPreviousButton = IconButton(symbolName: "chevron.up", tooltip: "Найти ранее", width: 26, height: 24)
@@ -236,6 +242,7 @@ private final class BrowserViewController: NSViewController {
         configureLayout()
         configureTabBar()
         configureToolbar()
+        configureBookmarksBar()
         configureFindBar()
         observePreferences()
         applyPreferences(redrawHomeTabs: false)
@@ -1213,6 +1220,7 @@ private final class BrowserViewController: NSViewController {
         settingsButton.action = #selector(showSettingsCommand(_:))
 
         browserContentView.addSubview(toolbarView)
+        browserContentView.addSubview(bookmarksBarView)
         browserContentView.addSubview(webContainerView)
 
         toolbarView.addSubview(toolbarTintView)
@@ -1229,7 +1237,11 @@ private final class BrowserViewController: NSViewController {
             toolbarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
             toolbarHeight,
 
-            webContainerView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+            bookmarksBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor),
+            bookmarksBarView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
+            bookmarksBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
+
+            webContainerView.topAnchor.constraint(equalTo: bookmarksBarView.bottomAnchor),
             webContainerView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
             webContainerView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
             webContainerView.bottomAnchor.constraint(equalTo: browserContentView.bottomAnchor),
@@ -1312,6 +1324,283 @@ private final class BrowserViewController: NSViewController {
         syncToolbar()
     }
 
+    private func configureBookmarksBar() {
+        bookmarksBarView.translatesAutoresizingMaskIntoConstraints = false
+        bookmarksBarView.material = .headerView
+        bookmarksBarView.blendingMode = .withinWindow
+        bookmarksBarView.state = .active
+
+        bookmarksBarScrollView.translatesAutoresizingMaskIntoConstraints = false
+        bookmarksBarScrollView.drawsBackground = false
+        bookmarksBarScrollView.hasVerticalScroller = false
+        bookmarksBarScrollView.hasHorizontalScroller = false
+        bookmarksBarScrollView.horizontalScrollElasticity = .allowed
+        bookmarksBarScrollView.borderType = .noBorder
+
+        bookmarksBarStack.translatesAutoresizingMaskIntoConstraints = false
+        bookmarksBarStack.orientation = .horizontal
+        bookmarksBarStack.alignment = .centerY
+        bookmarksBarStack.spacing = 2
+        bookmarksBarStack.edgeInsets = NSEdgeInsets(top: 0, left: 10, bottom: 0, right: 10)
+
+        bookmarksBarScrollView.documentView = bookmarksBarStack
+        bookmarksBarView.addSubview(bookmarksBarScrollView)
+
+        let height = bookmarksBarView.heightAnchor.constraint(equalToConstant: isBookmarksBarVisible ? 32 : 0)
+        bookmarksBarHeightConstraint = height
+
+        NSLayoutConstraint.activate([
+            height,
+            bookmarksBarScrollView.topAnchor.constraint(equalTo: bookmarksBarView.topAnchor),
+            bookmarksBarScrollView.leadingAnchor.constraint(equalTo: bookmarksBarView.leadingAnchor),
+            bookmarksBarScrollView.trailingAnchor.constraint(equalTo: bookmarksBarView.trailingAnchor),
+            bookmarksBarScrollView.bottomAnchor.constraint(equalTo: bookmarksBarView.bottomAnchor),
+            bookmarksBarStack.heightAnchor.constraint(equalTo: bookmarksBarScrollView.contentView.heightAnchor)
+        ])
+
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(bookmarksDidChange(_:)),
+            name: BookmarkStore.didChangeNotification,
+            object: BookmarkStore.shared
+        )
+
+        rebuildBookmarksBar()
+    }
+
+    @objc private func bookmarksDidChange(_ notification: Notification) {
+        rebuildBookmarksBar()
+    }
+
+    @objc func toggleBookmarksBarCommand(_ sender: Any?) {
+        isBookmarksBarVisible.toggle()
+        UserDefaults.standard.set(isBookmarksBarVisible, forKey: "northstar.bookmarksBar.visible")
+        bookmarksBarHeightConstraint?.constant = isBookmarksBarVisible ? 32 : 0
+        bookmarksBarView.isHidden = !isBookmarksBarVisible
+    }
+
+    @objc func createBookmarkFolderCommand(_ sender: Any?) {
+        let alert = NSAlert()
+        alert.messageText = "Новая папка закладок"
+        alert.informativeText = "Введите название папки."
+        alert.alertStyle = .informational
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
+        field.placeholderString = "Название папки"
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Создать")
+        alert.addButton(withTitle: "Отмена")
+        alert.window.initialFirstResponder = field
+
+        let handle: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .alertFirstButtonReturn else { return }
+            BookmarkStore.shared.createFolder(named: field.stringValue)
+        }
+
+        if let window = view.window {
+            alert.beginSheetModal(for: window, completionHandler: handle)
+        } else {
+            handle(alert.runModal())
+        }
+    }
+
+    private func rebuildBookmarksBar() {
+        bookmarksBarView.isHidden = !isBookmarksBarVisible
+        bookmarksBarHeightConstraint?.constant = isBookmarksBarVisible ? 32 : 0
+
+        bookmarksBarStack.arrangedSubviews.forEach {
+            bookmarksBarStack.removeArrangedSubview($0)
+            $0.removeFromSuperview()
+        }
+
+        let store = BookmarkStore.shared
+        let rootBookmarks = store.entries(inFolder: nil)
+        let folders = store.folders
+
+        let barMenu = NSMenu()
+        let newFolderItem = NSMenuItem(title: "Новая папка...", action: #selector(createBookmarkFolderCommand(_:)), keyEquivalent: "")
+        newFolderItem.target = self
+        barMenu.addItem(newFolderItem)
+        let hideItem = NSMenuItem(title: "Скрыть панель закладок", action: #selector(toggleBookmarksBarCommand(_:)), keyEquivalent: "")
+        hideItem.target = self
+        barMenu.addItem(hideItem)
+        bookmarksBarView.menu = barMenu
+        bookmarksBarStack.menu = barMenu
+
+        for folder in folders {
+            bookmarksBarStack.addArrangedSubview(makeBookmarkFolderButton(named: folder))
+        }
+
+        for entry in rootBookmarks.prefix(40) {
+            bookmarksBarStack.addArrangedSubview(makeBookmarkButton(for: entry))
+        }
+
+        if folders.isEmpty, rootBookmarks.isEmpty {
+            let hint = NSTextField(labelWithString: "Добавляйте закладки через ⌘D, папки — правым кликом")
+            hint.font = .systemFont(ofSize: 11.5)
+            hint.textColor = .tertiaryLabelColor
+            bookmarksBarStack.addArrangedSubview(hint)
+        }
+    }
+
+    private func bookmarkBarIcon(for urlString: String) -> NSImage? {
+        if let url = URL(string: urlString),
+           let favicon = FaviconStore.shared.cachedImage(for: url, profile: .system) {
+            return favicon
+        }
+
+        return NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+    }
+
+    private func makeBookmarkButton(for entry: BookmarkEntry) -> NSButton {
+        let button = NSButton(title: entry.title.truncatedForSuggestion(maxLength: 22), target: self, action: #selector(openBookmarkFromBar(_:)))
+        button.bezelStyle = .accessoryBarAction
+        button.font = .systemFont(ofSize: 11.5, weight: .medium)
+        button.image = bookmarkBarIcon(for: entry.url)
+        button.imagePosition = .imageLeading
+        button.imageScaling = .scaleProportionallyDown
+        button.toolTip = entry.url
+        button.cell?.representedObject = entry.url
+
+        let menu = NSMenu()
+        let openNew = NSMenuItem(title: "Открыть в новой вкладке", action: #selector(openBookmarkInNewTab(_:)), keyEquivalent: "")
+        openNew.target = self
+        openNew.representedObject = entry.url
+        menu.addItem(openNew)
+        menu.addItem(.separator())
+
+        let moveMenu = NSMenu()
+        let rootItem = NSMenuItem(title: "Без папки", action: #selector(moveBookmarkToFolder(_:)), keyEquivalent: "")
+        rootItem.target = self
+        rootItem.representedObject = ["id": entry.id.uuidString, "folder": ""]
+        rootItem.state = entry.folder == nil ? .on : .off
+        moveMenu.addItem(rootItem)
+        for folder in BookmarkStore.shared.folders {
+            let item = NSMenuItem(title: folder, action: #selector(moveBookmarkToFolder(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = ["id": entry.id.uuidString, "folder": folder]
+            item.state = entry.folder == folder ? .on : .off
+            moveMenu.addItem(item)
+        }
+        let moveItem = NSMenuItem(title: "Переместить в папку", action: nil, keyEquivalent: "")
+        moveItem.submenu = moveMenu
+        menu.addItem(moveItem)
+
+        menu.addItem(.separator())
+        let deleteItem = NSMenuItem(title: "Удалить", action: #selector(deleteBookmarkFromBar(_:)), keyEquivalent: "")
+        deleteItem.target = self
+        deleteItem.representedObject = entry.id.uuidString
+        menu.addItem(deleteItem)
+        button.menu = menu
+
+        return button
+    }
+
+    private func makeBookmarkFolderButton(named folder: String) -> NSButton {
+        let button = NSButton(title: folder.truncatedForSuggestion(maxLength: 20), target: self, action: #selector(showBookmarkFolderMenu(_:)))
+        button.bezelStyle = .accessoryBarAction
+        button.font = .systemFont(ofSize: 11.5, weight: .semibold)
+        button.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: folder)
+        button.imagePosition = .imageLeading
+        button.imageScaling = .scaleProportionallyDown
+        button.contentTintColor = .controlAccentColor
+        button.cell?.representedObject = folder
+        return button
+    }
+
+    @objc private func openBookmarkFromBar(_ sender: NSButton) {
+        guard let urlString = sender.cell?.representedObject as? String,
+              let url = URL(string: urlString) else {
+            return
+        }
+
+        if let tab = activeTab {
+            load(url, in: tab)
+        } else {
+            addTab(profile: .system, url: url, activate: true)
+        }
+    }
+
+    @objc private func openBookmarkInNewTab(_ sender: NSMenuItem) {
+        guard let urlString = sender.representedObject as? String,
+              let url = URL(string: urlString) else {
+            return
+        }
+
+        addTab(profile: activeTab?.profile ?? .system, url: url, activate: true)
+    }
+
+    @objc private func openBookmarkFromMenuItem(_ sender: NSMenuItem) {
+        guard let urlString = sender.representedObject as? String,
+              let url = URL(string: urlString) else {
+            return
+        }
+
+        if let tab = activeTab {
+            load(url, in: tab)
+        } else {
+            addTab(profile: .system, url: url, activate: true)
+        }
+    }
+
+    @objc private func moveBookmarkToFolder(_ sender: NSMenuItem) {
+        guard let info = sender.representedObject as? [String: String],
+              let idString = info["id"],
+              let id = UUID(uuidString: idString) else {
+            return
+        }
+
+        let folder = info["folder"].flatMap { $0.isEmpty ? nil : $0 }
+        BookmarkStore.shared.move(id: id, toFolder: folder)
+        refreshSettingsTabs()
+    }
+
+    @objc private func deleteBookmarkFromBar(_ sender: NSMenuItem) {
+        guard let idString = sender.representedObject as? String,
+              let id = UUID(uuidString: idString) else {
+            return
+        }
+
+        BookmarkStore.shared.remove(id: id)
+        refreshSettingsTabs()
+        if let tab = activeTab {
+            syncBookmarkButton(for: tab)
+        }
+    }
+
+    @objc private func deleteBookmarkFolder(_ sender: NSMenuItem) {
+        guard let folder = sender.representedObject as? String else { return }
+        BookmarkStore.shared.removeFolder(named: folder)
+        refreshSettingsTabs()
+    }
+
+    @objc private func showBookmarkFolderMenu(_ sender: NSButton) {
+        guard let folder = sender.cell?.representedObject as? String else { return }
+
+        let menu = NSMenu()
+        let items = BookmarkStore.shared.entries(inFolder: folder)
+        if items.isEmpty {
+            let empty = NSMenuItem(title: "Папка пуста", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        }
+
+        for entry in items {
+            let item = NSMenuItem(title: entry.title.truncatedForSuggestion(maxLength: 48), action: #selector(openBookmarkFromMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = entry.url
+            item.image = bookmarkBarIcon(for: entry.url)
+            menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+        let deleteItem = NSMenuItem(title: "Удалить папку", action: #selector(deleteBookmarkFolder(_:)), keyEquivalent: "")
+        deleteItem.target = self
+        deleteItem.representedObject = folder
+        menu.addItem(deleteItem)
+
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 4), in: sender)
+    }
+
     private func configureFindBar() {
         findBarView.translatesAutoresizingMaskIntoConstraints = false
         findBarView.material = .menu
@@ -1346,7 +1635,7 @@ private final class BrowserViewController: NSViewController {
         }
 
         NSLayoutConstraint.activate([
-            findBarView.topAnchor.constraint(equalTo: toolbarView.bottomAnchor, constant: 10),
+            findBarView.topAnchor.constraint(equalTo: webContainerView.topAnchor, constant: 10),
             findBarView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor, constant: -14),
             findBarView.heightAnchor.constraint(equalToConstant: 46),
             findBarView.widthAnchor.constraint(equalToConstant: 408),
@@ -3447,15 +3736,48 @@ private struct BookmarkEntry: Codable {
     var title: String
     var url: String
     var date: Date
+    var folder: String?
+
+    init(id: UUID, title: String, url: String, date: Date, folder: String? = nil) {
+        self.id = id
+        self.title = title
+        self.url = url
+        self.date = date
+        self.folder = folder
+    }
 }
 
 private final class BookmarkStore {
     static let shared = BookmarkStore()
+    static let didChangeNotification = Notification.Name("BookmarkStoreDidChange")
+
     private(set) var entries: [BookmarkEntry]
+    private(set) var explicitFolders: [String]
     private let defaults = UserDefaults.standard
     private let key = "browserBookmarkEntries"
+    private let foldersKey = "browserBookmarkFolders"
     private let maximumEntries = 500
-    private init() { entries = Self.loadEntries(defaults: defaults, key: key) }
+
+    private init() {
+        entries = Self.loadEntries(defaults: defaults, key: key)
+        explicitFolders = defaults.stringArray(forKey: foldersKey) ?? []
+    }
+
+    /// All folder names: explicitly created plus any referenced by entries.
+    var folders: [String] {
+        var names = explicitFolders
+        for entry in entries {
+            if let folder = entry.folder, !names.contains(folder) {
+                names.append(folder)
+            }
+        }
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    func entries(inFolder folder: String?) -> [BookmarkEntry] {
+        entries.filter { $0.folder == folder }
+    }
+
     func isBookmarked(url: URL) -> Bool { entries.contains { $0.url == url.absoluteString } }
     @discardableResult func toggle(url: URL, title: String) -> Bool {
         if isBookmarked(url: url) { remove(url: url); return false }
@@ -3472,8 +3794,58 @@ private final class BookmarkStore {
     }
     func remove(url: URL) { entries.removeAll { $0.url == url.absoluteString }; save() }
     func remove(id: UUID) { entries.removeAll { $0.id == id }; save() }
-    func clear() { entries.removeAll(); save() }
-    private func save() { guard let data = try? JSONEncoder().encode(entries) else { return }; defaults.set(data, forKey: key) }
+    func clear() {
+        entries.removeAll()
+        explicitFolders.removeAll()
+        defaults.set(explicitFolders, forKey: foldersKey)
+        save()
+    }
+
+    func createFolder(named name: String) {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, !folders.contains(clean) else { return }
+        explicitFolders.append(clean)
+        defaults.set(explicitFolders, forKey: foldersKey)
+        notifyChanged()
+    }
+
+    func removeFolder(named name: String) {
+        explicitFolders.removeAll { $0 == name }
+        defaults.set(explicitFolders, forKey: foldersKey)
+        for index in entries.indices where entries[index].folder == name {
+            entries[index].folder = nil
+        }
+        save()
+    }
+
+    func move(id: UUID, toFolder folder: String?) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[index].folder = folder
+        if let folder, !explicitFolders.contains(folder) {
+            explicitFolders.append(folder)
+            defaults.set(explicitFolders, forKey: foldersKey)
+        }
+        save()
+    }
+
+    func rename(id: UUID, title: String) {
+        let clean = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[index].title = clean
+        save()
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(entries) {
+            defaults.set(data, forKey: key)
+        }
+        notifyChanged()
+    }
+
+    private func notifyChanged() {
+        NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+    }
+
     private static func loadEntries(defaults: UserDefaults, key: String) -> [BookmarkEntry] {
         guard let data = defaults.data(forKey: key), let entries = try? JSONDecoder().decode([BookmarkEntry].self, from: data) else { return [] }
         return entries
@@ -7913,13 +8285,14 @@ private enum SettingsPage {
         let bookmarksMarkup = bookmarks.prefix(120).map { entry in
             let openURL = "\(northStarSettingsScheme)://open?url=\(entry.url.urlQueryEscaped)"
             let removeURL = "\(northStarSettingsScheme)://remove-bookmark?id=\(entry.id.uuidString.urlQueryEscaped)"
+            let folderPrefix = entry.folder.map { "📁 \($0.htmlEscaped) · " } ?? ""
             return """
             <div class="list-row bookmark-row">
               <a class="row-main" href="\(openURL)">
                 \(SiteIconHTML.markup(url: entry.url, title: entry.title, cssClass: "site-icon"))
                 <span class="row-copy">
                   <strong>\(entry.title.htmlEscaped)</strong>
-                  <small>\(entry.url.htmlEscaped)</small>
+                  <small>\(folderPrefix)\(entry.url.htmlEscaped)</small>
                 </span>
               </a>
               <span class="row-meta">
@@ -8928,6 +9301,10 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     let bookmarksMenu = NSMenu(title: "Закладки")
     bookmarksMenu.addItem(withTitle: "Добавить/удалить закладку", action: #selector(BrowserViewController.toggleBookmarkCommand(_:)), keyEquivalent: "d")
     bookmarksMenu.addItem(withTitle: "Показать все закладки", action: #selector(BrowserViewController.showBookmarksCommand(_:)), keyEquivalent: "b")
+    bookmarksMenu.addItem(.separator())
+    bookmarksMenu.addItem(withTitle: "Новая папка...", action: #selector(BrowserViewController.createBookmarkFolderCommand(_:)), keyEquivalent: "")
+    let toggleBarItem = bookmarksMenu.addItem(withTitle: "Показать/скрыть панель закладок", action: #selector(BrowserViewController.toggleBookmarksBarCommand(_:)), keyEquivalent: "b")
+    toggleBarItem.keyEquivalentModifierMask = [.command, .shift]
     bookmarksItem.submenu = bookmarksMenu
     mainMenu.addItem(bookmarksItem)
 
