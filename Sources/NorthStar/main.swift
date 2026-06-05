@@ -727,7 +727,8 @@ private final class BrowserViewController: NSViewController {
             searchEngine: preferences.searchEngine,
             theme: preferences.theme,
             colorScheme: preferences.colorScheme,
-            design: preferences.design
+            design: preferences.design,
+            homeBackground: preferences.homeBackground
         )
     }
 
@@ -845,6 +846,12 @@ private final class BrowserViewController: NSViewController {
                let design = DesignMode(identifier: identifier),
                design != preferences.design {
                 preferences.design = design
+            }
+
+            if let identifier = queryItems.first(where: { $0.name == "home" })?.value,
+               let homeBackground = HomeBackgroundMode(identifier: identifier),
+               homeBackground != preferences.homeBackground {
+                preferences.homeBackground = homeBackground
             }
 
             showSettings(in: tab)
@@ -1156,7 +1163,7 @@ private final class BrowserTab {
         bindWebViewState()
     }
 
-    func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) {
+    func loadHomePage(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode) {
         isShowingHome = true
         isShowingSettings = false
         title = appName
@@ -1164,7 +1171,7 @@ private final class BrowserTab {
         progress = 1
         notifyChanged()
         webView.loadHTMLString(
-            HomePage.html(searchEngine: searchEngine, theme: theme, colorScheme: colorScheme, design: design),
+            HomePage.html(searchEngine: searchEngine, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground),
             baseURL: nil
         )
     }
@@ -1297,12 +1304,17 @@ private final class AppPreferences {
         didSet { saveAndNotify(key: Keys.design, value: design.rawValue) }
     }
 
+    var homeBackground: HomeBackgroundMode {
+        didSet { saveAndNotify(key: Keys.homeBackground, value: homeBackground.rawValue) }
+    }
+
     private enum Keys {
         static let searchEngine = "searchEngine"
         static let tabPlacement = "tabPlacement"
         static let theme = "theme"
         static let colorScheme = "colorScheme"
         static let design = "design"
+        static let homeBackground = "homeBackground"
     }
 
     private let defaults = UserDefaults.standard
@@ -1314,6 +1326,7 @@ private final class AppPreferences {
         theme = ThemeMode(rawValue: defaults.integer(forKey: Keys.theme)) ?? .system
         colorScheme = ColorSchemeMode(rawValue: defaults.integer(forKey: Keys.colorScheme)) ?? .aurora
         design = DesignMode(rawValue: defaults.integer(forKey: Keys.design)) ?? .balanced
+        homeBackground = HomeBackgroundMode(rawValue: defaults.integer(forKey: Keys.homeBackground)) ?? .gradient
     }
 
     private func saveAndNotify(key: String, value: Int) {
@@ -2131,6 +2144,103 @@ private enum DesignMode: Int, CaseIterable {
     }
 }
 
+private enum HomeBackgroundMode: Int, CaseIterable {
+    case gradient
+    case solid
+    case grid
+    case glow
+    case glass
+
+    var title: String {
+        switch self {
+        case .gradient:
+            return "Мягкий градиент"
+        case .solid:
+            return "Однотонный"
+        case .grid:
+            return "Тонкая сетка"
+        case .glow:
+            return "Свечение"
+        case .glass:
+            return "Стекло"
+        }
+    }
+
+    var identifier: String {
+        switch self {
+        case .gradient:
+            return "gradient"
+        case .solid:
+            return "solid"
+        case .grid:
+            return "grid"
+        case .glow:
+            return "glow"
+        case .glass:
+            return "glass"
+        }
+    }
+
+    var backgroundCSS: String {
+        switch self {
+        case .gradient:
+            return "linear-gradient(120deg, var(--bg) 0%, var(--panel-strong) 54%, var(--bg) 100%)"
+        case .solid:
+            return "var(--bg)"
+        case .grid:
+            return "linear-gradient(120deg, var(--bg), var(--panel-strong))"
+        case .glow:
+            return "radial-gradient(circle at 28% 28%, color-mix(in srgb, var(--accent) 28%, transparent), transparent 31%), radial-gradient(circle at 74% 62%, color-mix(in srgb, var(--accent-2) 24%, transparent), transparent 34%), linear-gradient(140deg, var(--bg), var(--panel-strong))"
+        case .glass:
+            return "linear-gradient(135deg, color-mix(in srgb, var(--bg) 82%, var(--accent) 10%), color-mix(in srgb, var(--panel-strong) 86%, var(--accent-2) 12%))"
+        }
+    }
+
+    var overlayCSS: String {
+        switch self {
+        case .gradient, .solid:
+            return "none"
+        case .grid:
+            return "linear-gradient(var(--line) 1px, transparent 1px), linear-gradient(90deg, var(--line) 1px, transparent 1px)"
+        case .glow:
+            return "radial-gradient(circle at 50% 50%, transparent, color-mix(in srgb, var(--bg) 78%, transparent) 72%)"
+        case .glass:
+            return "linear-gradient(115deg, rgba(255,255,255,0.13), transparent 32%, rgba(255,255,255,0.08) 62%, transparent)"
+        }
+    }
+
+    var overlayOpacity: String {
+        switch self {
+        case .gradient, .solid:
+            return "0"
+        case .grid:
+            return "0.24"
+        case .glow:
+            return "0.62"
+        case .glass:
+            return "0.42"
+        }
+    }
+
+    var overlaySize: String {
+        switch self {
+        case .grid:
+            return "42px 42px"
+        default:
+            return "auto"
+        }
+    }
+
+    init?(identifier: String) {
+        let normalized = identifier.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard let background = Self.allCases.first(where: { $0.identifier == normalized }) else {
+            return nil
+        }
+
+        self = background
+    }
+}
+
 private enum SearchEngine: Int, CaseIterable {
     case duckDuckGo
     case google
@@ -2821,7 +2931,7 @@ private enum URLParser {
 }
 
 private enum HomePage {
-    static func html(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode) -> String {
+    static func html(searchEngine: SearchEngine, theme: ThemeMode, colorScheme: ColorSchemeMode, design: DesignMode, homeBackground: HomeBackgroundMode) -> String {
         let palette = HomePalette(theme: theme, colorScheme: colorScheme, design: design)
         let engine = searchEngine.title.htmlEscaped
         let engineOptions = SearchEngine.allCases.map { option in
@@ -2851,6 +2961,10 @@ private enum HomePage {
               --radius: \(palette.radius);
               --gap: \(palette.gap);
               --page-width: \(palette.pageWidth);
+              --home-bg: \(homeBackground.backgroundCSS);
+              --home-overlay: \(homeBackground.overlayCSS);
+              --home-overlay-opacity: \(homeBackground.overlayOpacity);
+              --home-overlay-size: \(homeBackground.overlaySize);
             }
             * { box-sizing: border-box; }
             html, body { margin: 0; min-height: 100%; }
@@ -2858,16 +2972,27 @@ private enum HomePage {
               min-height: 100vh;
               font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif;
               color: var(--text);
-              background:
-                linear-gradient(120deg, var(--bg) 0%, var(--panel-strong) 54%, var(--bg) 100%);
+              background: var(--home-bg);
               display: grid;
               place-items: center;
               overflow: hidden;
+            }
+            body::before {
+              content: "";
+              position: fixed;
+              inset: 0;
+              pointer-events: none;
+              background: var(--home-overlay);
+              background-size: var(--home-overlay-size);
+              opacity: var(--home-overlay-opacity);
+              mask-image: radial-gradient(circle at center, black, transparent 78%);
             }
             main {
               width: min(var(--page-width), calc(100vw - 48px));
               display: grid;
               gap: var(--gap);
+              position: relative;
+              z-index: 1;
             }
             .mast {
               display: grid;
@@ -3033,6 +3158,10 @@ private enum SettingsPage {
             let selected = option == preferences.design ? " selected" : ""
             return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
         }.joined()
+        let homeOptions = HomeBackgroundMode.allCases.map { option in
+            let selected = option == preferences.homeBackground ? " selected" : ""
+            return "<option value=\"\(option.identifier)\"\(selected)>\(option.title.htmlEscaped)</option>"
+        }.joined()
 
         let historyMarkup = history.prefix(60).map { entry in
             let openURL = "\(northStarSettingsScheme)://open?url=\(entry.url.urlQueryEscaped)"
@@ -3128,7 +3257,7 @@ private enum SettingsPage {
             .muted { color: var(--muted); font-size: 14px; margin: 8px 0 0; }
             .settings-grid {
               display: grid;
-              grid-template-columns: repeat(5, minmax(0, 1fr));
+              grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
               gap: 12px;
             }
             label, .section-head {
@@ -3300,6 +3429,10 @@ private enum SettingsPage {
                 <span>Дизайн</span>
                 <select id="design">\(designOptions)</select>
               </label>
+              <label>
+                <span>Главный экран</span>
+                <select id="home">\(homeOptions)</select>
+              </label>
             </section>
 
             <section aria-label="Производительность">
@@ -3353,7 +3486,8 @@ private enum SettingsPage {
                 tabs: document.getElementById("tabs").value,
                 theme: document.getElementById("theme").value,
                 scheme: document.getElementById("scheme").value,
-                design: document.getElementById("design").value
+                design: document.getElementById("design").value,
+                home: document.getElementById("home").value
               });
               window.location.href = "\(northStarSettingsScheme)://update?" + params.toString();
             };

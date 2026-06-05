@@ -26,7 +26,7 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Built-in engines: DuckDuckGo, Google, Yandex, Brave, Bing, Ecosia, and Startpage.
 - Settings open as a first-class internal tab instead of a modal sheet.
 - Browsing history and download history are available from the Settings tab.
-- Appearance controls include six color schemes and four interface designs.
+- Appearance controls include six color schemes, four interface designs, and five home-screen background styles.
 - Lightweight browser performance snapshot in Settings: tab count, loading tabs, app memory, average load time, and recent page timings.
 - Always-on ad blocking with WebKit content rules, host blocking, and DOM cleanup for injected ad containers.
 - Safari-like user agent to reduce search-engine bot challenges from custom WebKit fingerprints.
@@ -46,8 +46,9 @@ Open settings with `Command-,`, the gear button in the toolbar, or `northstar://
 | Theme | System, Light, Dark |
 | Color scheme | Aurora, Graphite, Ocean, Forest, Rose, Amber |
 | Design | Balanced, Compact, Spacious, Focus |
+| Home screen | Soft Gradient, Solid, Fine Grid, Glow, Glass |
 
-Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, color scheme, design density, and tab layout between launches.
+Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, theme, color scheme, design density, home-screen background, and tab layout between launches.
 
 You can also switch the search engine directly from the toolbar or from the NorthStar home screen before running a search.
 
