@@ -692,6 +692,7 @@ private final class BrowserViewController: NSViewController {
             row.configure(
                 title: tab.displayTitle,
                 detail: tab.profile.detail,
+                favicon: tab.faviconImage,
                 isActive: tab.id == activeTabID,
                 isHorizontal: isHorizontal,
                 design: preferences.design
@@ -972,6 +973,7 @@ extension BrowserViewController: WKNavigationDelegate {
         tab.syncFromWebView()
         if !tab.isShowingHome && !tab.isShowingSettings,
            let currentURL = tab.url ?? webView.url {
+            tab.refreshFavicon()
             BrowserHistoryStore.shared.record(url: currentURL, title: tab.displayTitle)
             PerformanceMonitor.shared.finish(tabID: tab.id, url: currentURL, title: tab.displayTitle, status: .loaded)
             refreshSettingsTabs()
@@ -1129,9 +1131,12 @@ private final class BrowserTab {
     private(set) var title = appName
     private(set) var url: URL?
     private(set) var progress = 1.0
+    private(set) var faviconImage: NSImage? = NSImage(systemSymbolName: "sparkles", accessibilityDescription: appName)
     private(set) var isShowingHome = true
     private(set) var isShowingSettings = false
     private var observations: [NSKeyValueObservation] = []
+    private var faviconTask: Task<Void, Never>?
+    private var faviconCacheKey: String?
 
     var displayTitle: String {
         if isShowingSettings {
@@ -1169,6 +1174,9 @@ private final class BrowserTab {
         title = appName
         url = nil
         progress = 1
+        faviconTask?.cancel()
+        faviconCacheKey = nil
+        faviconImage = NSImage(systemSymbolName: "sparkles", accessibilityDescription: appName)
         notifyChanged()
         webView.loadHTMLString(
             HomePage.html(searchEngine: searchEngine, theme: theme, colorScheme: colorScheme, design: design, homeBackground: homeBackground),
@@ -1182,6 +1190,9 @@ private final class BrowserTab {
         title = settingsTitle
         url = nil
         progress = 1
+        faviconTask?.cancel()
+        faviconCacheKey = nil
+        faviconImage = NSImage(systemSymbolName: "gearshape", accessibilityDescription: settingsTitle)
         notifyChanged()
         webView.loadHTMLString(
             SettingsPage.html(preferences: preferences, history: history, downloads: downloads, performance: performance, theme: theme),
@@ -1195,6 +1206,7 @@ private final class BrowserTab {
         self.url = url
         title = Self.normalizedTitle(url.host(percentEncoded: false)) ?? "Загрузка"
         progress = 0
+        updateFaviconFromCache(for: url)
         notifyChanged()
         webView.load(URLRequest(url: url))
     }
@@ -1203,6 +1215,7 @@ private final class BrowserTab {
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
+        faviconTask?.cancel()
         observations.removeAll()
     }
 
@@ -1217,9 +1230,41 @@ private final class BrowserTab {
             url = webView.url ?? url
             title = Self.normalizedTitle(webView.title) ?? Self.normalizedTitle(url?.host(percentEncoded: false)) ?? "Новая вкладка"
             progress = webView.estimatedProgress
+            updateFaviconFromCache(for: url)
         }
 
         notifyChanged()
+    }
+
+    func refreshFavicon() {
+        guard !isShowingHome && !isShowingSettings,
+              let pageURL = url ?? webView.url,
+              let cacheKey = FaviconStore.cacheKey(for: pageURL, profile: profile) else {
+            return
+        }
+
+        faviconCacheKey = cacheKey
+
+        if let cachedImage = FaviconStore.shared.cachedImage(for: pageURL, profile: profile) {
+            faviconTask?.cancel()
+            faviconImage = cachedImage
+            notifyChanged()
+            return
+        }
+
+        faviconTask?.cancel()
+        faviconTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let declaredIconURL = await self.declaredFaviconURL(baseURL: pageURL)
+            let image = await FaviconStore.shared.image(for: pageURL, declaredIconURL: declaredIconURL, profile: self.profile)
+            guard !Task.isCancelled,
+                  self.faviconCacheKey == cacheKey else {
+                return
+            }
+
+            self.faviconImage = image
+            self.notifyChanged()
+        }
     }
 
     private func bindWebViewState() {
@@ -1274,9 +1319,191 @@ private final class BrowserTab {
         onStateChange?(self)
     }
 
+    private func updateFaviconFromCache(for pageURL: URL?) {
+        guard let pageURL,
+              let cacheKey = FaviconStore.cacheKey(for: pageURL, profile: profile) else {
+            faviconCacheKey = nil
+            faviconImage = nil
+            faviconTask?.cancel()
+            return
+        }
+
+        if faviconCacheKey == cacheKey {
+            return
+        }
+
+        faviconCacheKey = cacheKey
+        faviconTask?.cancel()
+        faviconImage = FaviconStore.shared.cachedImage(for: pageURL, profile: profile)
+    }
+
+    private func declaredFaviconURL(baseURL: URL) async -> URL? {
+        let script = """
+        (() => {
+          const links = Array.from(document.querySelectorAll('link[rel][href]'));
+          const score = (link) => {
+            const rel = String(link.rel || '').toLowerCase();
+            const sizes = String(link.getAttribute('sizes') || '');
+            if (rel.includes('apple-touch-icon')) return 4;
+            if (sizes.includes('192') || sizes.includes('180') || sizes.includes('128')) return 3;
+            if (rel.includes('icon')) return 2;
+            return 0;
+          };
+          return links
+            .map((link) => ({ href: link.href, score: score(link) }))
+            .filter((item) => item.href && item.score > 0)
+            .sort((a, b) => b.score - a.score)[0]?.href || '';
+        })()
+        """
+
+        do {
+            guard let result = try await webView.evaluateJavaScript(script) as? String,
+                  !result.isEmpty else {
+                return nil
+            }
+
+            return URL(string: result, relativeTo: baseURL)?.absoluteURL
+        } catch {
+            return nil
+        }
+    }
+
     private static func normalizedTitle(_ title: String?) -> String? {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+@MainActor
+private final class FaviconStore {
+    static let shared = FaviconStore()
+
+    private let maximumIconBytes = 1_048_576
+    private var images: [String: NSImage] = [:]
+    private var failedKeys: Set<String> = []
+    private var inFlightTasks: [String: Task<NSImage?, Never>] = [:]
+
+    static func cacheKey(for pageURL: URL, profile: NetworkProfile) -> String? {
+        guard let host = pageURL.host(percentEncoded: false)?.lowercased(), !host.isEmpty else {
+            return nil
+        }
+
+        return "\(profile.rawValue):\(host)"
+    }
+
+    func cachedImage(for pageURL: URL, profile: NetworkProfile) -> NSImage? {
+        guard let key = Self.cacheKey(for: pageURL, profile: profile) else {
+            return nil
+        }
+
+        return images[key]
+    }
+
+    func image(for pageURL: URL, declaredIconURL: URL?, profile: NetworkProfile) async -> NSImage? {
+        guard let key = Self.cacheKey(for: pageURL, profile: profile) else {
+            return nil
+        }
+
+        if let cachedImage = images[key] {
+            return cachedImage
+        }
+
+        if failedKeys.contains(key) {
+            return nil
+        }
+
+        if let existingTask = inFlightTasks[key] {
+            return await existingTask.value
+        }
+
+        let candidates = Self.iconCandidates(for: pageURL, declaredIconURL: declaredIconURL, profile: profile)
+        guard !candidates.isEmpty else {
+            failedKeys.insert(key)
+            return nil
+        }
+
+        let task = Task<NSImage?, Never> { [maximumIconBytes] in
+            let session = URLSession(configuration: profile.faviconSessionConfiguration)
+            for candidate in candidates {
+                guard !Task.isCancelled else { return nil }
+                if let image = await Self.fetchImage(from: candidate, session: session, maximumBytes: maximumIconBytes) {
+                    return image
+                }
+            }
+
+            return nil
+        }
+
+        inFlightTasks[key] = task
+        let image = await task.value
+        inFlightTasks[key] = nil
+
+        if let image {
+            images[key] = image
+        } else {
+            failedKeys.insert(key)
+        }
+
+        return image
+    }
+
+    private static func iconCandidates(for pageURL: URL, declaredIconURL: URL?, profile: NetworkProfile) -> [URL] {
+        guard let scheme = pageURL.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = pageURL.host(percentEncoded: false), !host.isEmpty else {
+            return []
+        }
+
+        let origin = "\(scheme)://\(host)"
+        let baseCandidates = [
+            declaredIconURL,
+            URL(string: "/favicon.ico", relativeTo: URL(string: origin)),
+            URL(string: "/apple-touch-icon.png", relativeTo: URL(string: origin)),
+            URL(string: "/apple-touch-icon-precomposed.png", relativeTo: URL(string: origin))
+        ]
+
+        var seen: Set<String> = []
+        return baseCandidates.compactMap { candidate in
+            guard let iconURL = candidate?.absoluteURL,
+                  let iconScheme = iconURL.scheme?.lowercased(),
+                  ["http", "https"].contains(iconScheme),
+                  NetworkPolicy.allows(iconURL, profile: profile),
+                  !AdBlocker.shouldBlock(iconURL) else {
+                return nil
+            }
+
+            let key = iconURL.absoluteString
+            guard seen.insert(key).inserted else {
+                return nil
+            }
+
+            return iconURL
+        }
+    }
+
+    private static func fetchImage(from url: URL, session: URLSession, maximumBytes: Int) async -> NSImage? {
+        var request = URLRequest(url: url, cachePolicy: .returnCacheDataElseLoad, timeoutInterval: 6)
+        request.setValue(BrowserUserAgent.safari, forHTTPHeaderField: "User-Agent")
+        request.setValue("image/avif,image/webp,image/png,image/svg+xml,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            if let httpResponse = response as? HTTPURLResponse,
+               !(200..<300).contains(httpResponse.statusCode) {
+                return nil
+            }
+
+            guard !data.isEmpty, data.count <= maximumBytes,
+                  let image = NSImage(data: data),
+                  image.size.width > 0, image.size.height > 0 else {
+                return nil
+            }
+
+            image.size = NSSize(width: 16, height: 16)
+            return image
+        } catch {
+            return nil
+        }
     }
 }
 
@@ -2413,6 +2640,30 @@ private enum NetworkProfile: Int, CaseIterable, Equatable {
 
         return configuration
     }
+
+    var faviconSessionConfiguration: URLSessionConfiguration {
+        let configuration: URLSessionConfiguration
+
+        switch self {
+        case .system:
+            configuration = .default
+        case .privateBrowsing, .localhost:
+            configuration = .ephemeral
+        case .tor:
+            configuration = .ephemeral
+            configuration.connectionProxyDictionary = [
+                kCFNetworkProxiesSOCKSEnable as String: true,
+                kCFNetworkProxiesSOCKSProxy as String: "127.0.0.1",
+                kCFNetworkProxiesSOCKSPort as String: 9050
+            ]
+        }
+
+        configuration.requestCachePolicy = .returnCacheDataElseLoad
+        configuration.urlCache = URLCache(memoryCapacity: 2 * 1024 * 1024, diskCapacity: 0)
+        configuration.timeoutIntervalForRequest = 6
+        configuration.timeoutIntervalForResource = 8
+        return configuration
+    }
 }
 
 private enum BrowserUserAgent {
@@ -2702,6 +2953,7 @@ private final class TabRowView: NSView {
     var onClose: (() -> Void)?
 
     private let indicatorView = NSView()
+    private let faviconImageView = NSImageView()
     private let titleField = NSTextField(labelWithString: "Новая вкладка")
     private let detailField = NSTextField(labelWithString: "")
     private let closeButton = IconButton(symbolName: "xmark", tooltip: "Закрыть вкладку", width: 20, height: 20)
@@ -2713,6 +2965,7 @@ private final class TabRowView: NSView {
     private var titleCenterYConstraint: NSLayoutConstraint?
     private var titleLeadingConstraint: NSLayoutConstraint?
     private var indicatorWidthConstraint: NSLayoutConstraint?
+    private var faviconSizeConstraints: [NSLayoutConstraint] = []
     private var trackingAreaReference: NSTrackingArea?
 
     override init(frame frameRect: NSRect) {
@@ -2726,6 +2979,11 @@ private final class TabRowView: NSView {
         indicatorView.translatesAutoresizingMaskIntoConstraints = false
         indicatorView.wantsLayer = true
         indicatorView.layer?.cornerRadius = 1.5
+
+        faviconImageView.translatesAutoresizingMaskIntoConstraints = false
+        faviconImageView.imageScaling = .scaleProportionallyDown
+        faviconImageView.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+        faviconImageView.contentTintColor = .tertiaryLabelColor
 
         titleField.translatesAutoresizingMaskIntoConstraints = false
         titleField.font = .systemFont(ofSize: 12.8, weight: .medium)
@@ -2743,6 +3001,7 @@ private final class TabRowView: NSView {
         closeButton.action = #selector(closePressed(_:))
 
         addSubview(indicatorView)
+        addSubview(faviconImageView)
         addSubview(titleField)
         addSubview(detailField)
         addSubview(closeButton)
@@ -2750,13 +3009,16 @@ private final class TabRowView: NSView {
         let height = heightAnchor.constraint(equalToConstant: 58)
         let titleTop = titleField.topAnchor.constraint(equalTo: topAnchor, constant: 9)
         let titleCenterY = titleField.centerYAnchor.constraint(equalTo: centerYAnchor)
-        let titleLeading = titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 18)
+        let titleLeading = titleField.leadingAnchor.constraint(equalTo: faviconImageView.trailingAnchor, constant: 8)
         let indicatorWidth = indicatorView.widthAnchor.constraint(equalToConstant: 3)
+        let faviconWidth = faviconImageView.widthAnchor.constraint(equalToConstant: 16)
+        let faviconHeight = faviconImageView.heightAnchor.constraint(equalToConstant: 16)
         heightConstraint = height
         titleTopConstraint = titleTop
         titleCenterYConstraint = titleCenterY
         titleLeadingConstraint = titleLeading
         indicatorWidthConstraint = indicatorWidth
+        faviconSizeConstraints = [faviconWidth, faviconHeight]
 
         NSLayoutConstraint.activate([
             height,
@@ -2765,6 +3027,11 @@ private final class TabRowView: NSView {
             indicatorView.topAnchor.constraint(equalTo: topAnchor, constant: 9),
             indicatorView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -9),
             indicatorWidth,
+
+            faviconImageView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            faviconImageView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            faviconWidth,
+            faviconHeight,
 
             titleTop,
             titleLeading,
@@ -2786,17 +3053,19 @@ private final class TabRowView: NSView {
         nil
     }
 
-    func configure(title: String, detail: String, isActive: Bool, isHorizontal: Bool, design: DesignMode) {
+    func configure(title: String, detail: String, favicon: NSImage?, isActive: Bool, isHorizontal: Bool, design: DesignMode) {
         titleField.stringValue = title
         detailField.stringValue = detail
         detailField.isHidden = true
+        setFavicon(favicon)
         self.isActive = isActive
         isHorizontalLayout = isHorizontal
         layer?.cornerRadius = design.rowCornerRadius
         heightConstraint?.constant = isHorizontal ? design.horizontalTabRowHeight : design.verticalTabRowHeight
         indicatorView.isHidden = isHorizontal
         indicatorWidthConstraint?.constant = isHorizontal ? 0 : 3
-        titleLeadingConstraint?.constant = isHorizontal ? 12 : 18
+        titleLeadingConstraint?.constant = isHorizontal ? 7 : 8
+        faviconSizeConstraints.forEach { $0.constant = isHorizontal ? 16 : 17 }
         titleTopConstraint?.isActive = false
         titleCenterYConstraint?.isActive = true
         updateStyle()
@@ -2835,6 +3104,18 @@ private final class TabRowView: NSView {
 
     @objc private func closePressed(_ sender: Any?) {
         onClose?()
+    }
+
+    private func setFavicon(_ image: NSImage?) {
+        if let image {
+            faviconImageView.image = image
+            faviconImageView.contentTintColor = image.isTemplate ? .secondaryLabelColor : nil
+            faviconImageView.alphaValue = 1
+        } else {
+            faviconImageView.image = NSImage(systemSymbolName: "globe", accessibilityDescription: "Сайт")
+            faviconImageView.contentTintColor = .tertiaryLabelColor
+            faviconImageView.alphaValue = 0.72
+        }
     }
 
     private func updateStyle() {
