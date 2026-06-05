@@ -92,7 +92,7 @@ private final class BrowserViewController: NSViewController {
     private let tabBarTitle = NSTextField(labelWithString: "Tabs")
     private let newTabButton = IconButton(symbolName: "plus", tooltip: "New Tab", width: 30, height: 28)
     private let tabScrollView = NSScrollView()
-    private let tabStack = NSStackView()
+    private let tabStack = FlippedStackView()
 
     private let browserContentView = NSView()
     private let toolbarView = NSVisualEffectView()
@@ -434,7 +434,7 @@ private final class BrowserViewController: NSViewController {
                 tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
                 tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-                tabBarView.widthAnchor.constraint(equalToConstant: 276),
+                tabBarView.widthAnchor.constraint(equalToConstant: 288),
 
                 browserContentView.topAnchor.constraint(equalTo: view.topAnchor),
                 browserContentView.leadingAnchor.constraint(equalTo: tabBarView.trailingAnchor),
@@ -451,14 +451,14 @@ private final class BrowserViewController: NSViewController {
                 tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
                 tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-                tabBarView.widthAnchor.constraint(equalToConstant: 276)
+                tabBarView.widthAnchor.constraint(equalToConstant: 288)
             ]
         case .top:
             placementConstraints = [
                 tabBarView.topAnchor.constraint(equalTo: view.topAnchor),
                 tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-                tabBarView.heightAnchor.constraint(equalToConstant: 96),
+                tabBarView.heightAnchor.constraint(equalToConstant: 68),
 
                 browserContentView.topAnchor.constraint(equalTo: tabBarView.bottomAnchor),
                 browserContentView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
@@ -475,7 +475,7 @@ private final class BrowserViewController: NSViewController {
                 tabBarView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
                 tabBarView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
                 tabBarView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
-                tabBarView.heightAnchor.constraint(equalToConstant: 96)
+                tabBarView.heightAnchor.constraint(equalToConstant: 68)
             ]
         }
 
@@ -493,7 +493,7 @@ private final class BrowserViewController: NSViewController {
         tabStack.orientation = isHorizontal ? .horizontal : .vertical
         tabStack.alignment = isHorizontal ? .height : .width
         tabStack.edgeInsets = isHorizontal
-            ? NSEdgeInsets(top: 14, left: 10, bottom: 14, right: 14)
+            ? NSEdgeInsets(top: 10, left: 8, bottom: 10, right: 12)
             : NSEdgeInsets(top: 10, left: 12, bottom: 14, right: 12)
         tabScrollView.hasHorizontalScroller = isHorizontal
         tabScrollView.hasVerticalScroller = !isHorizontal
@@ -503,7 +503,7 @@ private final class BrowserViewController: NSViewController {
                 tabBarHeaderView.topAnchor.constraint(equalTo: tabBarView.topAnchor),
                 tabBarHeaderView.leadingAnchor.constraint(equalTo: tabBarView.leadingAnchor),
                 tabBarHeaderView.bottomAnchor.constraint(equalTo: tabBarView.bottomAnchor),
-                tabBarHeaderView.widthAnchor.constraint(equalToConstant: 176),
+                tabBarHeaderView.widthAnchor.constraint(equalToConstant: 156),
 
                 tabBarTitle.leadingAnchor.constraint(equalTo: tabBarHeaderView.leadingAnchor, constant: 16),
                 tabBarTitle.centerYAnchor.constraint(equalTo: tabBarHeaderView.centerYAnchor),
@@ -685,11 +685,14 @@ private final class BrowserViewController: NSViewController {
             }
 
             if isHorizontal {
-                row.widthAnchor.constraint(equalToConstant: 238).isActive = true
+                row.widthAnchor.constraint(equalToConstant: 220).isActive = true
             }
 
             tabStack.addArrangedSubview(row)
         }
+
+        tabScrollView.contentView.scroll(to: .zero)
+        tabScrollView.reflectScrolledClipView(tabScrollView.contentView)
     }
 
     private func tabStateDidChange(_ tab: BrowserTab) {
@@ -1395,6 +1398,10 @@ private enum NetworkPolicy {
     }
 }
 
+private final class FlippedStackView: NSStackView {
+    override var isFlipped: Bool { true }
+}
+
 @MainActor
 private final class TabRowView: NSView {
     var onSelect: (() -> Void)?
@@ -1406,6 +1413,8 @@ private final class TabRowView: NSView {
     private let closeButton = IconButton(symbolName: "xmark", tooltip: "Close Tab", width: 24, height: 22)
     private var isActive = false
     private var heightConstraint: NSLayoutConstraint?
+    private var titleTopConstraint: NSLayoutConstraint?
+    private var titleCenterYConstraint: NSLayoutConstraint?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1438,8 +1447,12 @@ private final class TabRowView: NSView {
         addSubview(detailField)
         addSubview(closeButton)
 
-        let height = heightAnchor.constraint(equalToConstant: 48)
+        let height = heightAnchor.constraint(equalToConstant: 58)
+        let titleTop = titleField.topAnchor.constraint(equalTo: topAnchor, constant: 9)
+        let titleCenterY = titleField.centerYAnchor.constraint(equalTo: centerYAnchor)
         heightConstraint = height
+        titleTopConstraint = titleTop
+        titleCenterYConstraint = titleCenterY
 
         NSLayoutConstraint.activate([
             height,
@@ -1449,7 +1462,7 @@ private final class TabRowView: NSView {
             indicatorView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -11),
             indicatorView.widthAnchor.constraint(equalToConstant: 4),
 
-            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 9),
+            titleTop,
             titleField.leadingAnchor.constraint(equalTo: indicatorView.trailingAnchor, constant: 10),
             titleField.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
 
@@ -1460,6 +1473,7 @@ private final class TabRowView: NSView {
             closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7)
         ])
+        titleCenterY.isActive = false
 
         updateStyle()
     }
@@ -1471,8 +1485,11 @@ private final class TabRowView: NSView {
     func configure(title: String, detail: String, isActive: Bool, isHorizontal: Bool) {
         titleField.stringValue = title
         detailField.stringValue = detail
+        detailField.isHidden = isHorizontal
         self.isActive = isActive
-        heightConstraint?.constant = isHorizontal ? 62 : 58
+        heightConstraint?.constant = isHorizontal ? 44 : 58
+        titleTopConstraint?.isActive = !isHorizontal
+        titleCenterYConstraint?.isActive = isHorizontal
         updateStyle()
     }
 
