@@ -13,6 +13,7 @@ private let parserTitle = "Парсер"
 private let readerTitle = "Чтение"
 private let cssScraperTitle = "CSS Scrapper"
 private let frozenTitle = "Заморожено"
+private let devToolsTitle = "DevTools"
 private let blankURL = URL(string: "about:blank")!
 private let northStarSearchScheme = "northstar-search"
 private let northStarSettingsScheme = "northstar-settings"
@@ -183,6 +184,9 @@ private final class BrowserViewController: NSViewController {
     private let findPreviousButton = IconButton(symbolName: "chevron.up", tooltip: "Найти ранее", width: 26, height: 24)
     private let findNextButton = IconButton(symbolName: "chevron.down", tooltip: "Найти далее", width: 26, height: 24)
     private let findCloseButton = IconButton(symbolName: "xmark", tooltip: "Закрыть поиск", width: 26, height: 24)
+    private let devToolsView = DevToolsConsoleView()
+    private var devToolsHeightConstraint: NSLayoutConstraint?
+    private var isDevToolsVisible = false
 
     private weak var screenshotEffectView: NSView?
     private var screenshotSound: NSSound?
@@ -429,6 +433,7 @@ private final class BrowserViewController: NSViewController {
         addItem("CSS Scrapper", symbol: "eyedropper.halffull", action: #selector(openCssScraperCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
         addItem("Режим чтения", symbol: "text.rectangle.page", action: #selector(openReaderCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
         addItem("Заморозить страницу", symbol: "snowflake", action: #selector(freezePageCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
+        addItem(isDevToolsVisible ? "Скрыть DevTools" : "DevTools консоль", symbol: "terminal", action: #selector(toggleDevToolsCommand(_:)), enabled: tab != nil)
         addItem("Конвертер валют", symbol: "dollarsign.circle", action: #selector(showCurrencyConverterCommand(_:)))
         let aiTitle = preferences.aiFilterEnabled ? "ИИ-фильтр: выключить" : "ИИ-фильтр: включить"
         addItem(aiTitle, symbol: "sparkles.rectangle.stack", action: #selector(toggleAIFilterCommand(_:)))
@@ -439,6 +444,109 @@ private final class BrowserViewController: NSViewController {
         addItem("Обновить без кэша", symbol: "arrow.clockwise.circle", action: #selector(hardReloadCommand(_:)), enabled: tab != nil)
 
         menu.popUp(positioning: nil, at: NSPoint(x: 0, y: sender.bounds.height + 6), in: sender)
+    }
+
+    @objc func toggleDevToolsCommand(_ sender: Any?) {
+        setDevToolsVisible(!isDevToolsVisible)
+    }
+
+    private func setDevToolsVisible(_ visible: Bool) {
+        guard isDevToolsVisible != visible else {
+            if visible {
+                updateDevToolsPanel()
+            }
+            return
+        }
+
+        isDevToolsVisible = visible
+        devToolsView.isHidden = !visible
+        devToolsHeightConstraint?.constant = visible ? 286 : 0
+        if visible {
+            updateDevToolsPanel()
+        }
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.allowsImplicitAnimation = true
+            view.layoutSubtreeIfNeeded()
+        }
+    }
+
+    private func updateDevToolsPanel() {
+        guard isDevToolsVisible else { return }
+
+        let targetTitle = activeTab?.displayTitle ?? "Нет активной вкладки"
+        let entries = activeTab?.devToolsEntries ?? []
+        devToolsView.configure(entries: entries, targetTitle: targetTitle, canRunCommand: activeTab != nil)
+    }
+
+    private func runDevToolsCommand(_ command: String) {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, let tab = activeTab else {
+            NSSound.beep()
+            return
+        }
+
+        tab.appendDevToolsEntry(DevToolsConsoleEntry(level: .command, text: trimmed, source: nil, line: nil, column: nil))
+        updateDevToolsPanel()
+
+        Task { @MainActor [weak self, weak tab] in
+            guard let self, let tab else { return }
+            do {
+                let result = try await tab.webView.evaluateJavaScript(trimmed)
+                tab.appendDevToolsEntry(DevToolsConsoleEntry(level: .result, text: DevToolsValueFormatter.string(from: result), source: nil, line: nil, column: nil))
+            } catch {
+                tab.appendDevToolsEntry(DevToolsConsoleEntry(level: .error, text: error.localizedDescription, source: nil, line: nil, column: nil))
+            }
+            self.updateDevToolsPanel()
+        }
+    }
+
+    private func clearDevToolsConsole() {
+        activeTab?.clearDevToolsEntries()
+        updateDevToolsPanel()
+    }
+
+    fileprivate func handleDevToolsMessage(_ body: Any) {
+        guard let payload = body as? [String: Any],
+              let tabIDString = payload["tabID"] as? String,
+              let tabID = UUID(uuidString: tabIDString),
+              let tab = tabs.first(where: { $0.id == tabID }) else {
+            return
+        }
+
+        let kind = payload["kind"] as? String
+        let level = kind == "system" ? DevToolsConsoleLevel.system : DevToolsConsoleLevel(jsLevel: payload["level"] as? String)
+        let args = (payload["args"] as? [Any] ?? []).map { String(describing: $0) }
+        var text = args.joined(separator: " ")
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            text = kind ?? "console"
+        }
+
+        let rawSource = (payload["source"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let source = rawSource.isEmpty ? nil : rawSource
+        let line = Self.intValue(payload["line"])
+        let column = Self.intValue(payload["column"])
+        tab.appendDevToolsEntry(DevToolsConsoleEntry(level: level, text: text, source: source, line: line, column: column))
+        if tab.id == activeTabID {
+            updateDevToolsPanel()
+        }
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int {
+            return value
+        }
+        if let value = value as? Double {
+            return Int(value)
+        }
+        if let value = value as? NSNumber {
+            return value.intValue
+        }
+        if let value = value as? String {
+            return Int(value)
+        }
+        return nil
     }
 
     @objc func toggleAIFilterCommand(_ sender: Any?) {
@@ -1652,6 +1760,18 @@ private final class BrowserViewController: NSViewController {
         webContainerView.translatesAutoresizingMaskIntoConstraints = false
         webContainerView.wantsLayer = true
 
+        devToolsView.translatesAutoresizingMaskIntoConstraints = false
+        devToolsView.isHidden = true
+        devToolsView.onRunCommand = { [weak self] command in
+            self?.runDevToolsCommand(command)
+        }
+        devToolsView.onClear = { [weak self] in
+            self?.clearDevToolsConsole()
+        }
+        devToolsView.onClose = { [weak self] in
+            self?.setDevToolsVisible(false)
+        }
+
         addressField.translatesAutoresizingMaskIntoConstraints = false
         addressField.bezelStyle = .roundedBezel
         addressField.font = .systemFont(ofSize: 14)
@@ -1722,6 +1842,7 @@ private final class BrowserViewController: NSViewController {
         browserContentView.addSubview(toolbarView)
         browserContentView.addSubview(bookmarksBarView)
         browserContentView.addSubview(webContainerView)
+        browserContentView.addSubview(devToolsView)
 
         toolbarView.addSubview(toolbarTintView)
         [toolbarSeparatorView, backButton, forwardButton, homeButton, bookmarkButton, readerButton, addressField, reloadButton, toolsButton, progressIndicator].forEach {
@@ -1729,7 +1850,9 @@ private final class BrowserViewController: NSViewController {
         }
 
         let toolbarHeight = toolbarView.heightAnchor.constraint(equalToConstant: preferences.design.toolbarHeight)
+        let devToolsHeight = devToolsView.heightAnchor.constraint(equalToConstant: 0)
         toolbarHeightConstraint = toolbarHeight
+        devToolsHeightConstraint = devToolsHeight
 
         NSLayoutConstraint.activate([
             toolbarView.topAnchor.constraint(equalTo: browserContentView.topAnchor),
@@ -1744,7 +1867,12 @@ private final class BrowserViewController: NSViewController {
             webContainerView.topAnchor.constraint(equalTo: bookmarksBarView.bottomAnchor),
             webContainerView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
             webContainerView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
-            webContainerView.bottomAnchor.constraint(equalTo: browserContentView.bottomAnchor),
+            webContainerView.bottomAnchor.constraint(equalTo: devToolsView.topAnchor),
+
+            devToolsView.leadingAnchor.constraint(equalTo: browserContentView.leadingAnchor),
+            devToolsView.trailingAnchor.constraint(equalTo: browserContentView.trailingAnchor),
+            devToolsView.bottomAnchor.constraint(equalTo: browserContentView.bottomAnchor),
+            devToolsHeight,
 
             toolbarTintView.topAnchor.constraint(equalTo: toolbarView.topAnchor),
             toolbarTintView.leadingAnchor.constraint(equalTo: toolbarView.leadingAnchor),
@@ -2476,6 +2604,7 @@ private final class BrowserViewController: NSViewController {
         let tab = BrowserTab(profile: profile)
         tab.webView.navigationDelegate = self
         tab.webView.uiDelegate = self
+        tab.installDevToolsBridge(handler: DevToolsScriptMessageRouter(controller: self))
         if let webView = tab.webView as? BrowserWebView {
             webView.onConfigureContextMenu = { [weak self] webView, menu in
                 self?.appendCurrencyConversionItem(to: menu, webView: webView)
@@ -2601,6 +2730,8 @@ private final class BrowserViewController: NSViewController {
             webView.trailingAnchor.constraint(equalTo: webContainerView.trailingAnchor),
             webView.bottomAnchor.constraint(equalTo: webContainerView.bottomAnchor)
         ])
+
+        updateDevToolsPanel()
     }
 
     private func renderTabs() {
@@ -2644,6 +2775,7 @@ private final class BrowserViewController: NSViewController {
     private func tabStateDidChange(_ tab: BrowserTab) {
         if tab.id == activeTabID {
             syncToolbar()
+            updateDevToolsPanel()
         }
 
         renderTabs()
@@ -3508,6 +3640,7 @@ extension BrowserViewController: WKNavigationDelegate {
         }
 
         tab.syncFromWebView()
+        tab.injectDevToolsBridge()
         if shouldRecordLocalActivity(for: tab), let currentURL = tab.url ?? webView.url {
             tab.refreshFavicon()
             BrowserHistoryStore.shared.record(url: currentURL, title: tab.displayTitle)
@@ -3693,6 +3826,21 @@ extension BrowserViewController: WKDownloadDelegate {
     }
 }
 
+private final class DevToolsScriptMessageRouter: NSObject, WKScriptMessageHandler {
+    weak var controller: BrowserViewController?
+
+    init(controller: BrowserViewController) {
+        self.controller = controller
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == DevToolsBridge.messageName else { return }
+        Task { @MainActor [weak controller] in
+            controller?.handleDevToolsMessage(message.body)
+        }
+    }
+}
+
 @MainActor
 private final class BrowserWebView: WKWebView {
     var onConfigureContextMenu: ((WKWebView, NSMenu) -> Void)?
@@ -3701,6 +3849,180 @@ private final class BrowserWebView: WKWebView {
         let menu = super.menu(for: event) ?? NSMenu()
         onConfigureContextMenu?(self, menu)
         return menu
+    }
+}
+
+private enum DevToolsConsoleLevel: String {
+    case debug
+    case log
+    case info
+    case warn
+    case error
+    case command
+    case result
+    case system
+
+    init(jsLevel: String?) {
+        switch jsLevel?.lowercased() {
+        case "debug":
+            self = .debug
+        case "info":
+            self = .info
+        case "warn", "warning":
+            self = .warn
+        case "error":
+            self = .error
+        default:
+            self = .log
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .debug: return "debug"
+        case .log: return "log"
+        case .info: return "info"
+        case .warn: return "warn"
+        case .error: return "error"
+        case .command: return "input"
+        case .result: return "result"
+        case .system: return "system"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .debug: return "ladybug"
+        case .log: return "text.bubble"
+        case .info: return "info.circle"
+        case .warn: return "exclamationmark.triangle"
+        case .error: return "xmark.octagon"
+        case .command: return "chevron.right"
+        case .result: return "return"
+        case .system: return "gearshape"
+        }
+    }
+
+    var color: NSColor {
+        switch self {
+        case .debug: return .systemPurple
+        case .log: return .secondaryLabelColor
+        case .info: return .systemBlue
+        case .warn: return .systemOrange
+        case .error: return .systemRed
+        case .command: return .systemMint
+        case .result: return .systemGreen
+        case .system: return .systemTeal
+        }
+    }
+}
+
+private struct DevToolsConsoleEntry: Identifiable {
+    let id = UUID()
+    let timestamp = Date()
+    var level: DevToolsConsoleLevel
+    var text: String
+    var source: String?
+    var line: Int?
+    var column: Int?
+}
+
+private enum DevToolsBridge {
+    static let messageName = "northstarDevTools"
+
+    static func installScript(tabID: String) -> String {
+        #"""
+        (() => {
+          const TAB_ID = "\#(tabID)";
+          const HANDLER = "\#(messageName)";
+          if (window.__northstarDevToolsInstalled === TAB_ID) return true;
+          window.__northstarDevToolsInstalled = TAB_ID;
+
+          const post = (payload) => {
+            try {
+              if (!window.webkit || !window.webkit.messageHandlers || !window.webkit.messageHandlers[HANDLER]) return;
+              window.webkit.messageHandlers[HANDLER].postMessage(Object.assign({
+                tabID: TAB_ID,
+                url: String(location.href || ""),
+                title: String(document.title || ""),
+                timestamp: Date.now()
+              }, payload));
+            } catch (_) {}
+          };
+
+          const serialize = (value) => {
+            try {
+              if (value === undefined) return "undefined";
+              if (value === null) return "null";
+              if (typeof value === "string") return value;
+              if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+              if (typeof value === "function") return `[Function ${value.name || "anonymous"}]`;
+              if (value instanceof Error) return `${value.name}: ${value.message}\n${value.stack || ""}`.trim();
+              if (value && value.nodeType === Node.ELEMENT_NODE) {
+                const id = value.id ? `#${value.id}` : "";
+                const className = value.className && typeof value.className === "string"
+                  ? "." + value.className.trim().split(/\s+/).slice(0, 4).join(".")
+                  : "";
+                return `<${String(value.tagName || "node").toLowerCase()}${id}${className}>`;
+              }
+
+              const seen = new WeakSet();
+              const json = JSON.stringify(value, (_key, item) => {
+                if (typeof item === "bigint") return String(item);
+                if (typeof item === "function") return `[Function ${item.name || "anonymous"}]`;
+                if (item && typeof item === "object") {
+                  if (seen.has(item)) return "[Circular]";
+                  seen.add(item);
+                }
+                return item;
+              }, 2);
+              return json || String(value);
+            } catch (error) {
+              try { return String(value); } catch (_) { return "[Unserializable value]"; }
+            }
+          };
+
+          const clipped = (text) => {
+            const raw = String(text || "");
+            return raw.length > 6000 ? raw.slice(0, 6000) + "\n... clipped by NorthStar DevTools" : raw;
+          };
+
+          ["debug", "log", "info", "warn", "error"].forEach((level) => {
+            const original = console[level];
+            if (typeof original !== "function" || original.__northstarWrapped) return;
+            const wrapped = function(...args) {
+              post({ kind: "console", level, args: args.map((item) => clipped(serialize(item))) });
+              return original.apply(this, args);
+            };
+            wrapped.__northstarWrapped = true;
+            console[level] = wrapped;
+          });
+
+          if (!window.__northstarDevToolsErrorListener) {
+            window.__northstarDevToolsErrorListener = true;
+            window.addEventListener("error", (event) => {
+              post({
+                kind: "pageError",
+                level: "error",
+                args: [clipped(event.message || "Script error")],
+                source: event.filename || "",
+                line: event.lineno || 0,
+                column: event.colno || 0
+              });
+            }, true);
+            window.addEventListener("unhandledrejection", (event) => {
+              post({
+                kind: "pageError",
+                level: "error",
+                args: ["Unhandled promise rejection", clipped(serialize(event.reason))]
+              });
+            }, true);
+          }
+
+          post({ kind: "system", level: "system", args: ["DevTools bridge connected"] });
+          return true;
+        })()
+        """#
     }
 }
 
@@ -3725,6 +4047,7 @@ private final class BrowserTab {
     private(set) var readerSnapshot: ReaderSnapshot?
     private(set) var cssScrapeSnapshot: CssScrapeSnapshot?
     private(set) var frozenSnapshot: FrozenPageSnapshot?
+    private(set) var devToolsEntries: [DevToolsConsoleEntry] = []
     private var observations: [NSKeyValueObservation] = []
     private var faviconTask: Task<Void, Never>?
     private var faviconCacheKey: String?
@@ -3984,8 +4307,37 @@ private final class BrowserTab {
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
+        webView.configuration.userContentController.removeScriptMessageHandler(forName: DevToolsBridge.messageName)
         faviconTask?.cancel()
         observations.removeAll()
+    }
+
+    func installDevToolsBridge(handler: WKScriptMessageHandler) {
+        webView.configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: DevToolsBridge.installScript(tabID: id.uuidString),
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: false
+            )
+        )
+        webView.configuration.userContentController.add(handler, name: DevToolsBridge.messageName)
+    }
+
+    func injectDevToolsBridge() {
+        webView.evaluateJavaScript(DevToolsBridge.installScript(tabID: id.uuidString), completionHandler: nil)
+    }
+
+    func appendDevToolsEntry(_ entry: DevToolsConsoleEntry) {
+        devToolsEntries.append(entry)
+        if devToolsEntries.count > 700 {
+            devToolsEntries.removeFirst(devToolsEntries.count - 700)
+        }
+        notifyChanged()
+    }
+
+    func clearDevToolsEntries() {
+        devToolsEntries.removeAll()
+        notifyChanged()
     }
 
     func syncFromWebView() {
@@ -8723,6 +9075,259 @@ private enum CurrencyDisplay {
     }()
 }
 
+private enum DevToolsValueFormatter {
+    static func string(from value: Any?) -> String {
+        guard let value else {
+            return "undefined"
+        }
+
+        if value is NSNull {
+            return "null"
+        }
+
+        if let value = value as? String {
+            return value
+        }
+
+        if let value = value as? NSNumber {
+            return value.stringValue
+        }
+
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
+           let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+
+        return String(describing: value)
+    }
+}
+
+private final class DevToolsConsoleView: NSVisualEffectView {
+    var onRunCommand: ((String) -> Void)?
+    var onClear: (() -> Void)?
+    var onClose: (() -> Void)?
+
+    private let titleField = NSTextField(labelWithString: "DevTools")
+    private let targetField = NSTextField(labelWithString: "Console")
+    private let countField = NSTextField(labelWithString: "0")
+    private let clearButton = ToolbarActionButton(symbolName: "trash", title: "Очистить", tooltip: "Очистить консоль", width: 96, height: 28)
+    private let closeButton = IconButton(symbolName: "xmark", tooltip: "Закрыть DevTools", width: 28, height: 28)
+    private let scrollView = NSScrollView()
+    private let textView = NSTextView()
+    private let promptField = NSTextField(labelWithString: ">")
+    private let commandField = NSTextField()
+    private let runButton = ToolbarActionButton(symbolName: "play.fill", title: "Выполнить", tooltip: "Выполнить JavaScript", width: 112, height: 30)
+    private let emptyField = NSTextField(labelWithString: "Консоль ждёт сообщений страницы. Можно выполнить JavaScript в строке ниже.")
+    private let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter
+    }()
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func configure(entries: [DevToolsConsoleEntry], targetTitle: String, canRunCommand: Bool) {
+        targetField.stringValue = targetTitle
+        countField.stringValue = "\(entries.count)"
+        commandField.isEnabled = canRunCommand
+        runButton.isEnabled = canRunCommand
+        emptyField.isHidden = !entries.isEmpty
+
+        let rendered = NSMutableAttributedString()
+        for entry in entries.suffix(700) {
+            rendered.append(attributedLine(for: entry))
+        }
+        textView.textStorage?.setAttributedString(rendered)
+        scrollToBottom()
+    }
+
+    private func configure() {
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.borderWidth = 1
+        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.34).cgColor
+
+        titleField.translatesAutoresizingMaskIntoConstraints = false
+        titleField.font = .systemFont(ofSize: 13, weight: .bold)
+        titleField.textColor = .labelColor
+
+        targetField.translatesAutoresizingMaskIntoConstraints = false
+        targetField.font = .systemFont(ofSize: 12, weight: .medium)
+        targetField.textColor = .secondaryLabelColor
+        targetField.lineBreakMode = .byTruncatingMiddle
+
+        countField.translatesAutoresizingMaskIntoConstraints = false
+        countField.font = .monospacedDigitSystemFont(ofSize: 11, weight: .semibold)
+        countField.textColor = .secondaryLabelColor
+        countField.alignment = .center
+        countField.wantsLayer = true
+        countField.layer?.cornerRadius = 8
+        countField.layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+
+        clearButton.target = self
+        clearButton.action = #selector(clearPressed(_:))
+        closeButton.target = self
+        closeButton.action = #selector(closePressed(_:))
+
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 12, height: 10)
+        textView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        textView.textColor = .labelColor
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        scrollView.documentView = textView
+
+        emptyField.translatesAutoresizingMaskIntoConstraints = false
+        emptyField.font = .systemFont(ofSize: 13, weight: .medium)
+        emptyField.textColor = .tertiaryLabelColor
+        emptyField.alignment = .center
+
+        promptField.translatesAutoresizingMaskIntoConstraints = false
+        promptField.font = .monospacedSystemFont(ofSize: 16, weight: .bold)
+        promptField.textColor = .systemMint
+
+        commandField.translatesAutoresizingMaskIntoConstraints = false
+        commandField.bezelStyle = .roundedBezel
+        commandField.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+        commandField.placeholderString = "JavaScript для текущей вкладки"
+        commandField.target = self
+        commandField.action = #selector(runPressed(_:))
+
+        runButton.target = self
+        runButton.action = #selector(runPressed(_:))
+
+        [titleField, targetField, countField, clearButton, closeButton, scrollView, emptyField, promptField, commandField, runButton].forEach {
+            addSubview($0)
+        }
+
+        NSLayoutConstraint.activate([
+            titleField.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            titleField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+
+            targetField.leadingAnchor.constraint(equalTo: titleField.trailingAnchor, constant: 12),
+            targetField.centerYAnchor.constraint(equalTo: titleField.centerYAnchor),
+            targetField.trailingAnchor.constraint(lessThanOrEqualTo: countField.leadingAnchor, constant: -10),
+
+            countField.centerYAnchor.constraint(equalTo: titleField.centerYAnchor),
+            countField.trailingAnchor.constraint(equalTo: clearButton.leadingAnchor, constant: -10),
+            countField.widthAnchor.constraint(greaterThanOrEqualToConstant: 34),
+            countField.heightAnchor.constraint(equalToConstant: 20),
+
+            clearButton.centerYAnchor.constraint(equalTo: titleField.centerYAnchor),
+            clearButton.trailingAnchor.constraint(equalTo: closeButton.leadingAnchor, constant: -8),
+
+            closeButton.centerYAnchor.constraint(equalTo: titleField.centerYAnchor),
+            closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14),
+
+            scrollView.topAnchor.constraint(equalTo: titleField.bottomAnchor, constant: 10),
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -12),
+            scrollView.bottomAnchor.constraint(equalTo: commandField.topAnchor, constant: -10),
+
+            emptyField.centerXAnchor.constraint(equalTo: scrollView.centerXAnchor),
+            emptyField.centerYAnchor.constraint(equalTo: scrollView.centerYAnchor),
+            emptyField.leadingAnchor.constraint(greaterThanOrEqualTo: scrollView.leadingAnchor, constant: 24),
+            emptyField.trailingAnchor.constraint(lessThanOrEqualTo: scrollView.trailingAnchor, constant: -24),
+
+            promptField.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            promptField.centerYAnchor.constraint(equalTo: commandField.centerYAnchor),
+            promptField.widthAnchor.constraint(equalToConstant: 16),
+
+            commandField.leadingAnchor.constraint(equalTo: promptField.trailingAnchor, constant: 8),
+            commandField.trailingAnchor.constraint(equalTo: runButton.leadingAnchor, constant: -10),
+            commandField.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            commandField.heightAnchor.constraint(equalToConstant: 30),
+
+            runButton.centerYAnchor.constraint(equalTo: commandField.centerYAnchor),
+            runButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -14)
+        ])
+    }
+
+    private func attributedLine(for entry: DevToolsConsoleEntry) -> NSAttributedString {
+        let line = NSMutableAttributedString()
+        let baseFont = NSFont.monospacedSystemFont(ofSize: 12, weight: .regular)
+        let metaFont = NSFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        let time = dateFormatter.string(from: entry.timestamp)
+        let location: String
+        if let source = entry.source, let lineNumber = entry.line, lineNumber > 0 {
+            let columnSuffix = entry.column.map { ":\($0)" } ?? ""
+            let sourceLabel = URL(string: source)?.lastPathComponent.nilIfEmpty ?? source
+            location = " \(sourceLabel):\(lineNumber)\(columnSuffix)"
+        } else {
+            location = ""
+        }
+
+        line.append(NSAttributedString(
+            string: "\(time) ",
+            attributes: [.font: metaFont, .foregroundColor: NSColor.tertiaryLabelColor]
+        ))
+        line.append(NSAttributedString(
+            string: "[\(entry.level.title)] ",
+            attributes: [.font: metaFont, .foregroundColor: entry.level.color]
+        ))
+        line.append(NSAttributedString(
+            string: entry.text,
+            attributes: [.font: baseFont, .foregroundColor: NSColor.labelColor]
+        ))
+        if !location.isEmpty {
+            line.append(NSAttributedString(
+                string: location,
+                attributes: [.font: metaFont, .foregroundColor: NSColor.secondaryLabelColor]
+            ))
+        }
+        line.append(NSAttributedString(string: "\n"))
+        return line
+    }
+
+    private func scrollToBottom() {
+        guard let documentView = scrollView.documentView else { return }
+        let visibleHeight = scrollView.contentView.bounds.height
+        let documentHeight = documentView.bounds.height
+        let targetY = max(0, documentHeight - visibleHeight)
+        scrollView.contentView.scroll(to: NSPoint(x: 0, y: targetY))
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+    }
+
+    @objc private func runPressed(_ sender: Any?) {
+        let command = commandField.stringValue
+        commandField.stringValue = ""
+        onRunCommand?(command)
+    }
+
+    @objc private func clearPressed(_ sender: Any?) {
+        onClear?()
+    }
+
+    @objc private func closePressed(_ sender: Any?) {
+        onClose?()
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
+}
+
 private final class FlippedStackView: NSStackView {
     override var isFlipped: Bool { true }
 }
@@ -12125,6 +12730,8 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     viewMenu.addItem(.separator())
     let parserItem = viewMenu.addItem(withTitle: "Парсер страницы", action: #selector(BrowserViewController.openParserCommand(_:)), keyEquivalent: "p")
     parserItem.keyEquivalentModifierMask = [.command, .option]
+    let devToolsItem = viewMenu.addItem(withTitle: "DevTools консоль", action: #selector(BrowserViewController.toggleDevToolsCommand(_:)), keyEquivalent: "i")
+    devToolsItem.keyEquivalentModifierMask = [.command, .option]
     let screenshotItem = viewMenu.addItem(withTitle: "Скопировать скриншот вкладки", action: #selector(BrowserViewController.screenshotTabCommand(_:)), keyEquivalent: "s")
     screenshotItem.keyEquivalentModifierMask = [.command, .option]
     viewMenu.addItem(.separator())
