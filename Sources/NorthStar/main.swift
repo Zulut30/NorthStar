@@ -1,7 +1,9 @@
 import AppKit
 import CoreServices
+import CryptoKit
 import Darwin
 import Network
+import Security
 import UniformTypeIdentifiers
 import WebKit
 
@@ -196,6 +198,7 @@ private final class BrowserViewController: NSViewController {
     private var remoteSearchSuggestions: [String] = []
     private var remoteSuggestionsQuery = ""
     private var defaultAppStatusMessage: String?
+    private var passwordVaultStatusMessage: String?
     private var tabs: [BrowserTab] = []
     private var activeTabID: UUID?
     private var recentlyClosedTabs: [(url: URL, profile: NetworkProfile)] = []
@@ -414,7 +417,13 @@ private final class BrowserViewController: NSViewController {
 
         addItem("История", symbol: "clock.arrow.circlepath", action: #selector(showHistoryCommand(_:)))
         addItem("Загрузки", symbol: "arrow.down.circle", action: #selector(showDownloadsCommand(_:)))
+        addItem("Пароли", symbol: "key.fill", action: #selector(showPasswordsCommand(_:)))
         addItem("Настройки", symbol: "gearshape", action: #selector(showSettingsCommand(_:)))
+        menu.addItem(.separator())
+        let canUsePasswordOnPage = tab?.isBrowsablePage ?? false
+        addItem("Заполнить логин", symbol: "person.badge.key.fill", action: #selector(autofillPasswordCommand(_:)), enabled: canUsePasswordOnPage)
+        addItem("Сохранить логин страницы", symbol: "key.viewfinder", action: #selector(savePageLoginCommand(_:)), enabled: canUsePasswordOnPage)
+        addItem("Сгенерировать пароль", symbol: "wand.and.stars", action: #selector(generatePasswordCommand(_:)))
         menu.addItem(.separator())
         addItem("Парсер страницы", symbol: "doc.text.magnifyingglass", action: #selector(openParserCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
         addItem("CSS Scrapper", symbol: "eyedropper.halffull", action: #selector(openCssScraperCommand(_:)), enabled: tab?.isBrowsablePage ?? false)
@@ -622,6 +631,53 @@ private final class BrowserViewController: NSViewController {
         openSettingsTab(activeSection: .downloads)
     }
 
+    @objc func showPasswordsCommand(_ sender: Any?) {
+        openSettingsTab(activeSection: .passwords)
+    }
+
+    @objc func addPasswordCommand(_ sender: Any?) {
+        addPassword(defaultURL: nil, detectedUsername: "", detectedPassword: "", existing: nil)
+    }
+
+    @objc func savePageLoginCommand(_ sender: Any?) {
+        guard let tab = activeTab,
+              tab.isBrowsablePage,
+              let pageURL = currentPageURL(for: tab) else {
+            NSSound.beep()
+            return
+        }
+
+        Task { @MainActor in
+            let candidate = await extractCredentialCandidate(from: tab.webView)
+            addPassword(
+                defaultURL: pageURL,
+                detectedUsername: candidate.username,
+                detectedPassword: candidate.password,
+                existing: nil
+            )
+        }
+    }
+
+    @objc func autofillPasswordCommand(_ sender: Any?) {
+        guard let tab = activeTab, tab.isBrowsablePage else {
+            NSSound.beep()
+            return
+        }
+
+        autofillPassword(in: tab, explicitCredential: nil)
+    }
+
+    @objc func generatePasswordCommand(_ sender: Any?) {
+        do {
+            let password = try PasswordGenerator.generate()
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(password, forType: .string)
+            showPasswordVaultInfo(title: "Пароль создан", message: "Сильный пароль скопирован в буфер обмена.")
+        } catch {
+            showPasswordVaultError(error)
+        }
+    }
+
     @objc func openParserCommand(_ sender: Any?) {
         guard let tab = activeTab else { return }
         Task { @MainActor in
@@ -669,6 +725,426 @@ private final class BrowserViewController: NSViewController {
     private func currentPageURL(for tab: BrowserTab) -> URL? {
         guard tab.isBrowsablePage else { return nil }
         return tab.url ?? tab.webView.url
+    }
+
+    private func addPassword(defaultURL: URL?, detectedUsername: String, detectedPassword: String, existing: PasswordCredential?) {
+        guard let credential = promptForCredential(
+            defaultURL: defaultURL,
+            detectedUsername: detectedUsername,
+            detectedPassword: detectedPassword,
+            existing: existing
+        ) else {
+            return
+        }
+
+        do {
+            try PasswordVaultStore.shared.upsert(credential)
+            passwordVaultStatusMessage = existing == nil ? "Логин сохранён в зашифрованном vault." : "Запись обновлена."
+            refreshSettingsTabs()
+        } catch {
+            showPasswordVaultError(error)
+        }
+    }
+
+    private func editPassword(id: UUID) {
+        guard let credential = PasswordVaultStore.shared.credential(id: id) else {
+            showPasswordVaultInfo(title: "Пароль не найден", message: "Запись уже удалена или vault был обновлён.")
+            return
+        }
+
+        addPassword(defaultURL: URL(string: credential.url), detectedUsername: "", detectedPassword: "", existing: credential)
+    }
+
+    private func removePassword(id: UUID) {
+        do {
+            try PasswordVaultStore.shared.remove(id: id)
+            passwordVaultStatusMessage = "Запись удалена из vault."
+            refreshSettingsTabs()
+        } catch {
+            showPasswordVaultError(error)
+        }
+    }
+
+    private func clearPasswordVault() {
+        let alert = NSAlert()
+        alert.messageText = "Очистить менеджер паролей?"
+        alert.informativeText = "Все локальные логины будут удалены из зашифрованного vault. Это действие нельзя отменить."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Очистить")
+        alert.addButton(withTitle: "Отмена")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        do {
+            try PasswordVaultStore.shared.clear()
+            passwordVaultStatusMessage = "Vault очищен."
+            refreshSettingsTabs()
+        } catch {
+            showPasswordVaultError(error)
+        }
+    }
+
+    private func copyPasswordField(id: UUID, field: PasswordCopyField) {
+        guard let credential = PasswordVaultStore.shared.credential(id: id) else {
+            showPasswordVaultInfo(title: "Пароль не найден", message: "Запись уже удалена или vault был обновлён.")
+            return
+        }
+
+        let value: String
+        let message: String
+        switch field {
+        case .username:
+            value = credential.username
+            message = "Логин скопирован в буфер обмена."
+        case .password:
+            value = credential.password
+            message = "Пароль скопирован в буфер обмена."
+        }
+
+        guard !value.isEmpty else {
+            showPasswordVaultInfo(title: "Поле пустое", message: "В этой записи нет значения для копирования.")
+            return
+        }
+
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        passwordVaultStatusMessage = message
+        refreshSettingsTabs()
+    }
+
+    private func openPasswordURL(id: UUID, in tab: BrowserTab) {
+        guard let credential = PasswordVaultStore.shared.credential(id: id),
+              let url = URL(string: credential.url) else {
+            showPasswordVaultInfo(title: "Сайт не найден", message: "У этой записи нет корректного адреса.")
+            return
+        }
+
+        load(url, in: tab)
+    }
+
+    private func exportPasswordVault() {
+        guard !PasswordVaultStore.shared.entries.isEmpty else {
+            showPasswordVaultInfo(title: "Vault пуст", message: "Сначала сохраните хотя бы один логин.")
+            return
+        }
+
+        guard let passphrase = promptForVaultPassphrase(
+            title: "Экспорт паролей",
+            message: "Придумайте пароль для зашифрованного файла экспорта.",
+            requiresConfirmation: true
+        ) else {
+            return
+        }
+
+        let panel = NSSavePanel()
+        panel.title = "Экспорт паролей"
+        panel.nameFieldStringValue = "NorthStar Passwords.nsvault"
+        panel.canCreateDirectories = true
+        if let vaultType = UTType(filenameExtension: "nsvault") {
+            panel.allowedContentTypes = [vaultType, .json]
+        } else {
+            panel.allowedContentTypes = [.json]
+        }
+
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+
+        do {
+            let data = try PasswordVaultStore.shared.encryptedExport(passphrase: passphrase)
+            try data.write(to: fileURL, options: [.atomic])
+            passwordVaultStatusMessage = "Зашифрованный экспорт сохранён: \(fileURL.lastPathComponent)"
+            refreshSettingsTabs()
+        } catch {
+            showPasswordVaultError(error)
+        }
+    }
+
+    private func importPasswordVault() {
+        let panel = NSOpenPanel()
+        panel.title = "Импорт паролей"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        if let vaultType = UTType(filenameExtension: "nsvault") {
+            panel.allowedContentTypes = [vaultType, .json]
+        } else {
+            panel.allowedContentTypes = [.json]
+        }
+
+        guard panel.runModal() == .OK, let fileURL = panel.url else { return }
+        guard let passphrase = promptForVaultPassphrase(
+            title: "Импорт паролей",
+            message: "Введите пароль от зашифрованного файла.",
+            requiresConfirmation: false
+        ) else {
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let importedCount = try PasswordVaultStore.shared.importEncrypted(data: data, passphrase: passphrase)
+            passwordVaultStatusMessage = "Импортировано записей: \(importedCount)."
+            refreshSettingsTabs()
+        } catch {
+            showPasswordVaultError(error)
+        }
+    }
+
+    private func extractCredentialCandidate(from webView: WKWebView) async -> (username: String, password: String) {
+        let script = #"""
+        (() => {
+          const visible = (element) => {
+            if (!element || element.disabled) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+          };
+          const inputs = Array.from(document.querySelectorAll("input")).filter(visible);
+          const passwordInput = inputs.find((input) => String(input.type || "").toLowerCase() === "password");
+          const form = passwordInput?.form || passwordInput?.closest("form") || document;
+          const formInputs = Array.from(form.querySelectorAll("input")).filter(visible);
+          const textTypes = new Set(["text", "email", "search", "tel", "url", "number"]);
+          const textInputs = formInputs.filter((input) => textTypes.has(String(input.type || "text").toLowerCase()));
+          const passwordIndex = passwordInput ? formInputs.indexOf(passwordInput) : -1;
+          let usernameInput = textInputs.find((input) => /user|login|email|mail|account|identifier/i.test([
+            input.name, input.id, input.autocomplete, input.placeholder
+          ].join(" ")));
+          if (!usernameInput && passwordIndex > 0) {
+            usernameInput = formInputs.slice(0, passwordIndex).reverse().find((input) => textInputs.includes(input));
+          }
+          if (!usernameInput) usernameInput = textInputs[0];
+          return JSON.stringify({
+            username: usernameInput?.value || "",
+            password: passwordInput?.value || ""
+          });
+        })()
+        """#
+
+        guard let json = try? await webView.evaluateJavaScript(script) as? String,
+              let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ("", "")
+        }
+
+        return (object["username"] as? String ?? "", object["password"] as? String ?? "")
+    }
+
+    private func autofillPassword(in tab: BrowserTab, explicitCredential: PasswordCredential?) {
+        guard let pageURL = currentPageURL(for: tab) else {
+            NSSound.beep()
+            return
+        }
+
+        let credential: PasswordCredential?
+        if let explicitCredential {
+            credential = explicitCredential
+        } else {
+            let matches = PasswordVaultStore.shared.matchingCredentials(for: pageURL)
+            credential = chooseCredential(from: matches, pageURL: pageURL)
+        }
+
+        guard let credential else { return }
+
+        tab.webView.evaluateJavaScript(PasswordAutofillScript.script(for: credential)) { [weak self] result, error in
+            Task { @MainActor in
+                guard let self else { return }
+                if let error {
+                    self.showPasswordVaultError(error)
+                    return
+                }
+
+                let filled = Self.autofillResultFilled(result)
+                if filled {
+                    self.passwordVaultStatusMessage = "Логин заполнен для \(credential.displayHost)."
+                } else {
+                    self.showPasswordVaultInfo(
+                        title: "Форма не найдена",
+                        message: "На текущей странице не удалось найти поле пароля для автозаполнения."
+                    )
+                }
+            }
+        }
+    }
+
+    private func chooseCredential(from credentials: [PasswordCredential], pageURL: URL) -> PasswordCredential? {
+        guard !credentials.isEmpty else {
+            showPasswordVaultInfo(
+                title: "Нет сохранённых логинов",
+                message: "Для \(pageURL.host(percentEncoded: false) ?? pageURL.absoluteString) пока нет записей в vault."
+            )
+            return nil
+        }
+
+        guard credentials.count > 1 else { return credentials[0] }
+
+        let alert = NSAlert()
+        alert.messageText = "Выберите логин"
+        alert.informativeText = "Для этого сайта найдено несколько сохранённых записей."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Заполнить")
+        alert.addButton(withTitle: "Отмена")
+
+        let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 360, height: 28), pullsDown: false)
+        for credential in credentials {
+            let username = credential.username.isEmpty ? "без логина" : credential.username
+            popup.addItem(withTitle: "\(credential.title) - \(username)")
+            popup.lastItem?.representedObject = credential.id.uuidString
+        }
+        alert.accessoryView = popup
+
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let rawID = popup.selectedItem?.representedObject as? String,
+              let id = UUID(uuidString: rawID) else {
+            return nil
+        }
+
+        return credentials.first { $0.id == id }
+    }
+
+    private static func autofillResultFilled(_ result: Any?) -> Bool {
+        if let dictionary = result as? [String: Any] {
+            return dictionary["filled"] as? Bool ?? false
+        }
+
+        if let json = result as? String,
+           let data = json.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return object["filled"] as? Bool ?? false
+        }
+
+        return false
+    }
+
+    private func promptForCredential(defaultURL: URL?, detectedUsername: String, detectedPassword: String, existing: PasswordCredential?) -> PasswordCredential? {
+        let alert = NSAlert()
+        alert.messageText = existing == nil ? "Сохранить логин" : "Изменить логин"
+        alert.informativeText = "Запись будет храниться в локальном vault, зашифрованном AES-GCM."
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Сохранить")
+        alert.addButton(withTitle: "Отмена")
+
+        let urlString = existing?.url ?? defaultURL?.absoluteString ?? ""
+        let hostTitle = existing?.title ?? defaultURL?.host(percentEncoded: false) ?? ""
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 9
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let titleField = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        titleField.stringValue = hostTitle
+        titleField.placeholderString = "Название"
+        let urlField = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        urlField.stringValue = urlString
+        urlField.placeholderString = "https://example.com"
+        let usernameField = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        usernameField.stringValue = existing?.username ?? detectedUsername
+        usernameField.placeholderString = "Логин или email"
+        let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        passwordField.stringValue = existing?.password ?? detectedPassword
+        passwordField.placeholderString = "Пароль"
+        let notesField = NSTextField(frame: NSRect(x: 0, y: 0, width: 380, height: 24))
+        notesField.stringValue = existing?.notes ?? ""
+        notesField.placeholderString = "Заметка"
+
+        [
+            ("Название", titleField),
+            ("Сайт", urlField),
+            ("Логин", usernameField),
+            ("Пароль", passwordField),
+            ("Заметка", notesField)
+        ].forEach { title, field in
+            stack.addArrangedSubview(Self.labeledControl(title: title, control: field))
+        }
+
+        alert.accessoryView = stack
+        alert.window.initialFirstResponder = usernameField
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+        let normalizedURL = PasswordCredential.normalizedURL(from: urlField.stringValue)
+        let password = passwordField.stringValue
+        guard let normalizedURL, !password.isEmpty else {
+            showPasswordVaultInfo(
+                title: "Запись не сохранена",
+                message: "Укажите корректный адрес сайта и пароль."
+            )
+            return nil
+        }
+
+        let title = titleField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let now = Date()
+        return PasswordCredential(
+            id: existing?.id ?? UUID(),
+            title: title.isEmpty ? PasswordCredential.defaultTitle(for: normalizedURL) : title,
+            url: normalizedURL,
+            username: usernameField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            password: password,
+            notes: notesField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            createdAt: existing?.createdAt ?? now,
+            updatedAt: now
+        )
+    }
+
+    private static func labeledControl(title: String, control: NSControl) -> NSStackView {
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.spacing = 4
+        let label = NSTextField(labelWithString: title)
+        label.font = .systemFont(ofSize: 12, weight: .semibold)
+        label.textColor = .secondaryLabelColor
+        stack.addArrangedSubview(label)
+        stack.addArrangedSubview(control)
+        return stack
+    }
+
+    private func promptForVaultPassphrase(title: String, message: String, requiresConfirmation: Bool) -> String? {
+        while true {
+            let alert = NSAlert()
+            alert.messageText = title
+            alert.informativeText = message
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "Продолжить")
+            alert.addButton(withTitle: "Отмена")
+
+            let stack = NSStackView()
+            stack.orientation = .vertical
+            stack.spacing = 9
+            let passwordField = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+            passwordField.placeholderString = "Пароль файла"
+            stack.addArrangedSubview(Self.labeledControl(title: "Пароль", control: passwordField))
+
+            var confirmationField: NSSecureTextField?
+            if requiresConfirmation {
+                let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 24))
+                field.placeholderString = "Повторите пароль"
+                stack.addArrangedSubview(Self.labeledControl(title: "Повтор", control: field))
+                confirmationField = field
+            }
+
+            alert.accessoryView = stack
+            alert.window.initialFirstResponder = passwordField
+
+            guard alert.runModal() == .alertFirstButtonReturn else { return nil }
+
+            let passphrase = passwordField.stringValue
+            guard !passphrase.isEmpty else {
+                Self.runBlockingInfo(title: "Пароль пустой", message: "Для экспорта или импорта нужен пароль файла.")
+                continue
+            }
+
+            if let confirmationField, confirmationField.stringValue != passphrase {
+                Self.runBlockingInfo(title: "Пароли не совпадают", message: "Введите одинаковый пароль в оба поля.")
+                continue
+            }
+
+            return passphrase
+        }
+    }
+
+    private static func runBlockingInfo(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+        alert.runModal()
     }
 
     private func syncBookmarkButton(for tab: BrowserTab) {
@@ -2003,6 +2479,7 @@ private final class BrowserViewController: NSViewController {
         if let webView = tab.webView as? BrowserWebView {
             webView.onConfigureContextMenu = { [weak self] webView, menu in
                 self?.appendCurrencyConversionItem(to: menu, webView: webView)
+                self?.appendPasswordManagerItems(to: menu, webView: webView)
             }
         }
         tab.onStateChange = { [weak self] changedTab in
@@ -2330,13 +2807,15 @@ private final class BrowserViewController: NSViewController {
             history: BrowserHistoryStore.shared.entries,
             downloads: DownloadHistoryStore.shared.entries,
             bookmarks: BookmarkStore.shared.entries,
+            passwords: PasswordVaultStore.shared.entries,
             performance: PerformanceMonitor.shared.snapshot(
                 activeTabs: tabs.count,
                 loadingTabs: tabs.filter { $0.webView.isLoading }.count
             ),
             theme: preferences.theme,
             activeSection: activeSection,
-            defaultAppStatus: defaultAppStatusMessage
+            defaultAppStatus: defaultAppStatusMessage,
+            passwordVaultStatus: passwordVaultStatusMessage ?? PasswordVaultStore.shared.statusMessage
         )
     }
 
@@ -2531,6 +3010,52 @@ private final class BrowserViewController: NSViewController {
                 tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
             }
             showSettings(in: tab, activeSection: .bookmarks)
+        case "password-add":
+            addPassword(defaultURL: nil, detectedUsername: "", detectedPassword: "", existing: nil)
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-edit":
+            if let rawID = queryItems.first(where: { $0.name == "id" })?.value,
+               let id = UUID(uuidString: rawID) {
+                editPassword(id: id)
+            }
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-remove":
+            if let rawID = queryItems.first(where: { $0.name == "id" })?.value,
+               let id = UUID(uuidString: rawID) {
+                removePassword(id: id)
+            }
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-copy-username":
+            if let rawID = queryItems.first(where: { $0.name == "id" })?.value,
+               let id = UUID(uuidString: rawID) {
+                copyPasswordField(id: id, field: .username)
+            }
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-copy-password":
+            if let rawID = queryItems.first(where: { $0.name == "id" })?.value,
+               let id = UUID(uuidString: rawID) {
+                copyPasswordField(id: id, field: .password)
+            }
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-open":
+            if let rawID = queryItems.first(where: { $0.name == "id" })?.value,
+               let id = UUID(uuidString: rawID) {
+                openPasswordURL(id: id, in: tab)
+            } else {
+                showSettings(in: tab, activeSection: .passwords)
+            }
+        case "password-export":
+            exportPasswordVault()
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-import":
+            importPasswordVault()
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-clear":
+            clearPasswordVault()
+            showSettings(in: tab, activeSection: .passwords)
+        case "password-generate":
+            generatePasswordCommand(nil)
+            showSettings(in: tab, activeSection: .passwords)
         case "clear-downloads":
             DownloadHistoryStore.shared.clear()
             showSettings(in: tab, activeSection: .downloads)
@@ -2677,10 +3202,66 @@ private final class BrowserViewController: NSViewController {
         menu.addItem(scanItem)
     }
 
+    private func appendPasswordManagerItems(to menu: NSMenu, webView: WKWebView) {
+        guard let tab = tab(for: webView), tab.isBrowsablePage else { return }
+
+        if !menu.items.isEmpty {
+            menu.addItem(.separator())
+        }
+
+        let fillItem = NSMenuItem(
+            title: "Заполнить логин",
+            action: #selector(contextAutofillPasswordCommand(_:)),
+            keyEquivalent: ""
+        )
+        fillItem.target = self
+        fillItem.representedObject = webView
+        fillItem.isEnabled = currentPageURL(for: tab).map { !PasswordVaultStore.shared.matchingCredentials(for: $0).isEmpty } ?? false
+        menu.addItem(fillItem)
+
+        let saveItem = NSMenuItem(
+            title: "Сохранить логин страницы...",
+            action: #selector(contextSavePasswordCommand(_:)),
+            keyEquivalent: ""
+        )
+        saveItem.target = self
+        saveItem.representedObject = webView
+        menu.addItem(saveItem)
+    }
+
     @objc private func contextToggleBookmarkCommand(_ sender: NSMenuItem) {
         guard let webView = sender.representedObject as? WKWebView, let tab = tab(for: webView), let pageURL = currentPageURL(for: tab) else { NSSound.beep(); return }
         _ = BookmarkStore.shared.toggle(url: pageURL, title: tab.displayTitle)
         syncBookmarkButton(for: tab); refreshSettingsTabs(); tabs.filter(\.isShowingHome).forEach { showHome(in: $0) }
+    }
+
+    @objc private func contextAutofillPasswordCommand(_ sender: NSMenuItem) {
+        guard let webView = sender.representedObject as? WKWebView,
+              let tab = tab(for: webView) else {
+            NSSound.beep()
+            return
+        }
+
+        autofillPassword(in: tab, explicitCredential: nil)
+    }
+
+    @objc private func contextSavePasswordCommand(_ sender: NSMenuItem) {
+        guard let webView = sender.representedObject as? WKWebView,
+              let tab = tab(for: webView),
+              let pageURL = currentPageURL(for: tab) else {
+            NSSound.beep()
+            return
+        }
+
+        Task { @MainActor in
+            let candidate = await extractCredentialCandidate(from: webView)
+            addPassword(
+                defaultURL: pageURL,
+                detectedUsername: candidate.username,
+                detectedPassword: candidate.password,
+                existing: nil
+            )
+        }
     }
 
     private func showBlockedURL(_ url: URL, profile: NetworkProfile) {
@@ -2879,6 +3460,32 @@ extension BrowserViewController: NSSearchFieldDelegate {
             return true
         default:
             return false
+        }
+    }
+
+    private func showPasswordVaultInfo(title: String, message: String) {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .informational
+
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    private func showPasswordVaultError(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Менеджер паролей"
+        alert.informativeText = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        alert.alertStyle = .warning
+
+        if let window = view.window {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
         }
     }
 }
@@ -3213,7 +3820,7 @@ private final class BrowserTab {
         )
     }
 
-    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], bookmarks: [BookmarkEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) {
+    func loadSettingsPage(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], bookmarks: [BookmarkEntry], passwords: [PasswordCredential], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?, passwordVaultStatus: String?) {
         isShowingHome = false
         isShowingSettings = true
         isShowingParser = false
@@ -3232,7 +3839,7 @@ private final class BrowserTab {
         faviconImage = NSImage(systemSymbolName: "gearshape", accessibilityDescription: settingsTitle)
         notifyChanged()
         webView.loadHTMLString(
-            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, bookmarks: bookmarks, performance: performance, theme: theme, activeSection: activeSection, defaultAppStatus: defaultAppStatus),
+            SettingsPage.html(preferences: preferences, history: history, downloads: downloads, bookmarks: bookmarks, passwords: passwords, performance: performance, theme: theme, activeSection: activeSection, defaultAppStatus: defaultAppStatus, passwordVaultStatus: passwordVaultStatus),
             baseURL: nil
         )
     }
@@ -4781,6 +5388,474 @@ private final class BookmarkStore {
     private static func loadEntries(defaults: UserDefaults, key: String) -> [BookmarkEntry] {
         guard let data = defaults.data(forKey: key), let entries = try? JSONDecoder().decode([BookmarkEntry].self, from: data) else { return [] }
         return entries
+    }
+}
+
+private enum PasswordCopyField {
+    case username
+    case password
+}
+
+private struct PasswordCredential: Codable {
+    let id: UUID
+    var title: String
+    var url: String
+    var username: String
+    var password: String
+    var notes: String
+    var createdAt: Date
+    var updatedAt: Date
+
+    var displayHost: String {
+        URL(string: url)?.host(percentEncoded: false) ?? url
+    }
+
+    func matches(pageURL: URL) -> Bool {
+        guard let savedHost = URL(string: url)?.host(percentEncoded: false)?.lowercased(),
+              let pageHost = pageURL.host(percentEncoded: false)?.lowercased() else {
+            return false
+        }
+
+        return pageHost == savedHost || pageHost.hasSuffix(".\(savedHost)")
+    }
+
+    static func normalizedURL(from rawValue: String) -> String? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let candidate = trimmed.contains("://") ? trimmed : "https://\(trimmed)"
+        guard let source = URLComponents(string: candidate),
+              let scheme = source.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              let host = source.host?.lowercased(),
+              !host.isEmpty else {
+            return nil
+        }
+
+        var normalized = URLComponents()
+        normalized.scheme = scheme
+        normalized.host = host
+        normalized.port = source.port
+        return normalized.url?.absoluteString
+    }
+
+    static func defaultTitle(for normalizedURL: String) -> String {
+        URL(string: normalizedURL)?.host(percentEncoded: false) ?? normalizedURL
+    }
+}
+
+private struct PasswordVaultStorageEnvelope: Codable {
+    var format = "northstar-password-vault-storage"
+    var version = 1
+    var sealedPayload: Data
+}
+
+private struct PasswordVaultExportEnvelope: Codable {
+    var format = "northstar-password-vault-export"
+    var version = 1
+    var createdAt: Date
+    var kdf = "PBKDF2-HMAC-SHA256"
+    var iterations: Int
+    var salt: Data
+    var sealedPayload: Data
+}
+
+private enum PasswordVaultError: LocalizedError {
+    case invalidStorage
+    case invalidExport
+    case invalidPassphrase
+    case keychain(OSStatus)
+    case random(OSStatus)
+    case encryptionFailed
+    case saveFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidStorage:
+            return "Зашифрованное хранилище паролей повреждено или имеет неподдерживаемый формат."
+        case .invalidExport:
+            return "Файл импорта не похож на зашифрованный экспорт NorthStar."
+        case .invalidPassphrase:
+            return "Не удалось расшифровать файл. Проверьте пароль экспорта."
+        case .keychain(let status):
+            let detail = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
+            return "Keychain не вернул ключ vault: \(detail)"
+        case .random(let status):
+            return "Не удалось получить криптографически стойкие случайные байты: OSStatus \(status)."
+        case .encryptionFailed:
+            return "Не удалось завершить шифрование vault."
+        case .saveFailed:
+            return "Не удалось сохранить зашифрованный vault на диск."
+        }
+    }
+}
+
+private enum PasswordVaultKeychain {
+    private static let service = "NorthStar.PasswordVault"
+    private static let account = "vault-key-v1"
+
+    static func vaultKey() throws -> SymmetricKey {
+        if let data = try readKey() {
+            return SymmetricKey(data: data)
+        }
+
+        let data = try Data.secureRandom(count: 32)
+        try saveKey(data)
+        return SymmetricKey(data: data)
+    }
+
+    private static var baseQuery: [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+    }
+
+    private static func readKey() throws -> Data? {
+        var query = baseQuery
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        query[kSecReturnData as String] = true
+
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        if status == errSecItemNotFound {
+            return nil
+        }
+        guard status == errSecSuccess else {
+            throw PasswordVaultError.keychain(status)
+        }
+
+        return item as? Data
+    }
+
+    private static func saveKey(_ data: Data) throws {
+        var query = baseQuery
+        query[kSecValueData as String] = data
+        query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status == errSecDuplicateItem {
+            let updateStatus = SecItemUpdate(baseQuery as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+            guard updateStatus == errSecSuccess else {
+                throw PasswordVaultError.keychain(updateStatus)
+            }
+            return
+        }
+
+        guard status == errSecSuccess else {
+            throw PasswordVaultError.keychain(status)
+        }
+    }
+}
+
+private final class PasswordVaultStore {
+    static let shared = PasswordVaultStore()
+    static let didChangeNotification = Notification.Name("PasswordVaultStoreDidChange")
+
+    private(set) var entries: [PasswordCredential]
+    private(set) var statusMessage: String?
+    private let fileURL: URL
+
+    private init() {
+        fileURL = Self.defaultVaultURL()
+        do {
+            entries = try Self.loadEntries(from: fileURL)
+        } catch {
+            entries = []
+            statusMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func credential(id: UUID) -> PasswordCredential? {
+        entries.first { $0.id == id }
+    }
+
+    func matchingCredentials(for pageURL: URL) -> [PasswordCredential] {
+        entries
+            .filter { $0.matches(pageURL: pageURL) }
+            .sorted { lhs, rhs in
+                if lhs.displayHost == rhs.displayHost {
+                    return lhs.updatedAt > rhs.updatedAt
+                }
+                return lhs.displayHost.count > rhs.displayHost.count
+            }
+    }
+
+    func upsert(_ credential: PasswordCredential) throws {
+        entries.removeAll { $0.id == credential.id }
+        entries.insert(credential, at: 0)
+        entries.sort { $0.updatedAt > $1.updatedAt }
+        try save()
+    }
+
+    func remove(id: UUID) throws {
+        entries.removeAll { $0.id == id }
+        try save()
+    }
+
+    func clear() throws {
+        entries.removeAll()
+        try save()
+    }
+
+    func encryptedExport(passphrase: String) throws -> Data {
+        let payload = try JSONEncoder().encode(entries)
+        let salt = try Data.secureRandom(count: 16)
+        let key = try PasswordKDF.deriveKey(passphrase: passphrase, salt: salt)
+        guard let sealed = try AES.GCM.seal(payload, using: key).combined else {
+            throw PasswordVaultError.encryptionFailed
+        }
+
+        let envelope = PasswordVaultExportEnvelope(
+            createdAt: Date(),
+            iterations: PasswordKDF.defaultIterations,
+            salt: salt,
+            sealedPayload: sealed
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return try encoder.encode(envelope)
+    }
+
+    @discardableResult
+    func importEncrypted(data: Data, passphrase: String) throws -> Int {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let envelope = try? decoder.decode(PasswordVaultExportEnvelope.self, from: data),
+              envelope.format == "northstar-password-vault-export",
+              envelope.version == 1,
+              envelope.kdf == "PBKDF2-HMAC-SHA256",
+              (10_000...1_000_000).contains(envelope.iterations) else {
+            throw PasswordVaultError.invalidExport
+        }
+
+        let key = try PasswordKDF.deriveKey(
+            passphrase: passphrase,
+            salt: envelope.salt,
+            iterations: envelope.iterations
+        )
+
+        let payload: Data
+        do {
+            let box = try AES.GCM.SealedBox(combined: envelope.sealedPayload)
+            payload = try AES.GCM.open(box, using: key)
+        } catch {
+            throw PasswordVaultError.invalidPassphrase
+        }
+
+        let imported = try JSONDecoder().decode([PasswordCredential].self, from: payload)
+        var byID = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+        for credential in imported {
+            byID[credential.id] = credential
+        }
+        entries = Array(byID.values).sorted { $0.updatedAt > $1.updatedAt }
+        try save()
+        return imported.count
+    }
+
+    private func save() throws {
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let payload = try JSONEncoder().encode(entries)
+            let key = try PasswordVaultKeychain.vaultKey()
+            guard let sealed = try AES.GCM.seal(payload, using: key).combined else {
+                throw PasswordVaultError.encryptionFailed
+            }
+            let envelope = PasswordVaultStorageEnvelope(sealedPayload: sealed)
+            let data = try JSONEncoder().encode(envelope)
+            try data.write(to: fileURL, options: [.atomic])
+            statusMessage = nil
+            NotificationCenter.default.post(name: Self.didChangeNotification, object: self)
+        } catch let error as PasswordVaultError {
+            throw error
+        } catch {
+            throw PasswordVaultError.saveFailed
+        }
+    }
+
+    private static func loadEntries(from fileURL: URL) throws -> [PasswordCredential] {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else {
+            return []
+        }
+
+        let data = try Data(contentsOf: fileURL)
+        let envelope = try JSONDecoder().decode(PasswordVaultStorageEnvelope.self, from: data)
+        guard envelope.format == "northstar-password-vault-storage", envelope.version == 1 else {
+            throw PasswordVaultError.invalidStorage
+        }
+
+        let key = try PasswordVaultKeychain.vaultKey()
+        let box = try AES.GCM.SealedBox(combined: envelope.sealedPayload)
+        let payload = try AES.GCM.open(box, using: key)
+        return try JSONDecoder().decode([PasswordCredential].self, from: payload)
+            .sorted { $0.updatedAt > $1.updatedAt }
+    }
+
+    private static func defaultVaultURL() -> URL {
+        let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support", isDirectory: true)
+        return baseURL.appendingPathComponent(appName, isDirectory: true).appendingPathComponent("PasswordVault.nsvault")
+    }
+}
+
+private enum PasswordKDF {
+    static let defaultIterations = 210_000
+
+    static func deriveKey(passphrase: String, salt: Data, iterations: Int = defaultIterations) throws -> SymmetricKey {
+        guard !passphrase.isEmpty, iterations > 0 else {
+            throw PasswordVaultError.invalidPassphrase
+        }
+
+        let passwordKey = SymmetricKey(data: Data(passphrase.utf8))
+        var derived = [UInt8]()
+        var blockIndex: UInt32 = 1
+
+        while derived.count < 32 {
+            var saltBlock = Data(salt)
+            var bigEndianIndex = blockIndex.bigEndian
+            withUnsafeBytes(of: &bigEndianIndex) { bytes in
+                saltBlock.append(contentsOf: bytes)
+            }
+
+            var u = Array(HMAC<SHA256>.authenticationCode(for: saltBlock, using: passwordKey))
+            var t = u
+            if iterations > 1 {
+                for _ in 1..<iterations {
+                    u = Array(HMAC<SHA256>.authenticationCode(for: Data(u), using: passwordKey))
+                    for index in t.indices {
+                        t[index] ^= u[index]
+                    }
+                }
+            }
+
+            derived.append(contentsOf: t)
+            blockIndex += 1
+        }
+
+        return SymmetricKey(data: Data(derived.prefix(32)))
+    }
+}
+
+private enum PasswordGenerator {
+    private static let uppercase = Array("ABCDEFGHJKLMNPQRSTUVWXYZ")
+    private static let lowercase = Array("abcdefghijkmnopqrstuvwxyz")
+    private static let digits = Array("23456789")
+    private static let symbols = Array("!@#$%^&*()-_=+[]{}")
+
+    static func generate(length: Int = 20) throws -> String {
+        let groups = [uppercase, lowercase, digits, symbols]
+        var characters = try groups.map { try randomCharacter(from: $0) }
+        let alphabet = groups.flatMap { $0 }
+
+        while characters.count < max(length, groups.count) {
+            characters.append(try randomCharacter(from: alphabet))
+        }
+
+        try secureShuffle(&characters)
+        return String(characters)
+    }
+
+    private static func randomCharacter(from characters: [Character]) throws -> Character {
+        characters[try secureRandomIndex(upperBound: characters.count)]
+    }
+
+    private static func secureShuffle(_ characters: inout [Character]) throws {
+        guard characters.count > 1 else { return }
+        for index in stride(from: characters.count - 1, through: 1, by: -1) {
+            let other = try secureRandomIndex(upperBound: index + 1)
+            characters.swapAt(index, other)
+        }
+    }
+
+    private static func secureRandomIndex(upperBound: Int) throws -> Int {
+        precondition(upperBound > 0)
+        let upper = UInt32(upperBound)
+        let limit = UInt32.max - (UInt32.max % upper)
+
+        while true {
+            var value: UInt32 = 0
+            let status = withUnsafeMutableBytes(of: &value) { buffer in
+                SecRandomCopyBytes(kSecRandomDefault, MemoryLayout<UInt32>.size, buffer.baseAddress!)
+            }
+            guard status == errSecSuccess else {
+                throw PasswordVaultError.random(status)
+            }
+            if value < limit {
+                return Int(value % upper)
+            }
+        }
+    }
+}
+
+private enum PasswordAutofillScript {
+    static func script(for credential: PasswordCredential) -> String {
+        let payload: [String: String] = [
+            "username": credential.username,
+            "password": credential.password
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+        let json = String(data: data, encoding: .utf8) ?? "{}"
+
+        return """
+        (() => {
+          const credential = \(json);
+          const visible = (element) => {
+            if (!element || element.disabled || element.readOnly) return false;
+            const style = getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+          };
+          const setValue = (element, value) => {
+            element.focus();
+            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+            if (setter) setter.call(element, value);
+            else element.value = value;
+            element.dispatchEvent(new Event("input", { bubbles: true }));
+            element.dispatchEvent(new Event("change", { bubbles: true }));
+          };
+          const inputs = Array.from(document.querySelectorAll("input")).filter(visible);
+          const passwordInputs = inputs.filter((input) => String(input.type || "").toLowerCase() === "password");
+          if (!passwordInputs.length) return JSON.stringify({ filled: false, reason: "password" });
+
+          const active = document.activeElement;
+          const passwordInput = passwordInputs.includes(active) ? active : passwordInputs[0];
+          setValue(passwordInput, credential.password || "");
+
+          const form = passwordInput.form || passwordInput.closest("form") || document;
+          const formInputs = Array.from(form.querySelectorAll("input")).filter(visible);
+          const textTypes = new Set(["text", "email", "search", "tel", "url", "number"]);
+          const textInputs = formInputs.filter((input) => textTypes.has(String(input.type || "text").toLowerCase()));
+          const passwordIndex = formInputs.indexOf(passwordInput);
+          let usernameInput = textInputs.find((input) => /user|login|email|mail|account|identifier/i.test([
+            input.name, input.id, input.autocomplete, input.placeholder
+          ].join(" ")));
+          if (!usernameInput && passwordIndex > 0) {
+            usernameInput = formInputs.slice(0, passwordIndex).reverse().find((input) => textInputs.includes(input));
+          }
+          if (!usernameInput) usernameInput = textInputs[0];
+          if (usernameInput && credential.username) setValue(usernameInput, credential.username);
+
+          return JSON.stringify({ filled: true, username: Boolean(usernameInput && credential.username) });
+        })()
+        """
+    }
+}
+
+private extension Data {
+    static func secureRandom(count: Int) throws -> Data {
+        var bytes = [UInt8](repeating: 0, count: count)
+        let status = bytes.withUnsafeMutableBytes { buffer in
+            SecRandomCopyBytes(kSecRandomDefault, count, buffer.baseAddress!)
+        }
+        guard status == errSecSuccess else {
+            throw PasswordVaultError.random(status)
+        }
+        return Data(bytes)
     }
 }
 
@@ -9741,6 +10816,7 @@ private enum SettingsSection: String, CaseIterable {
     case shortcuts
     case currency
     case performance
+    case passwords
     case bookmarks
     case history
     case downloads
@@ -9763,6 +10839,8 @@ private enum SettingsSection: String, CaseIterable {
             return "Валюты"
         case .performance:
             return "Производительность"
+        case .passwords:
+            return "Пароли"
         case .bookmarks:
             return "Закладки"
         case .history:
@@ -9788,6 +10866,8 @@ private enum SettingsSection: String, CaseIterable {
             return "Курс и конвертация"
         case .performance:
             return "Состояние текущего окна"
+        case .passwords:
+            return "Логины, импорт и экспорт"
         case .bookmarks:
             return "Сохранённые страницы"
         case .history:
@@ -9813,6 +10893,8 @@ private enum SettingsSection: String, CaseIterable {
             return "💱"
         case .performance:
             return "⚡️"
+        case .passwords:
+            return "🔐"
         case .bookmarks:
             return "⭐️"
         case .history:
@@ -9833,11 +10915,16 @@ private enum SettingsSection: String, CaseIterable {
 }
 
 private enum SettingsPage {
-    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], bookmarks: [BookmarkEntry], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?) -> String {
+    static func html(preferences: AppPreferences, history: [BrowserHistoryEntry], downloads: [DownloadHistoryEntry], bookmarks: [BookmarkEntry], passwords: [PasswordCredential], performance: PerformanceSnapshot, theme: ThemeMode, activeSection: SettingsSection, defaultAppStatus: String?, passwordVaultStatus: String?) -> String {
         let palette = HomePalette(theme: theme, colorScheme: preferences.colorScheme, design: preferences.design)
         let activeSectionID = activeSection.identifier.htmlEscaped
         let searchEngineLogo = preferences.searchEngine.logoURL.htmlEscaped
         let defaultAppStatusMarkup = defaultAppStatus.map { message in
+            """
+            <div class="notice">\(message.htmlEscaped)</div>
+            """
+        } ?? ""
+        let passwordVaultStatusMarkup = passwordVaultStatus.map { message in
             """
             <div class="notice">\(message.htmlEscaped)</div>
             """
@@ -9926,6 +11013,36 @@ private enum SettingsPage {
               <span class="row-meta">
                 <time>\(DateDisplay.string(from: entry.date).htmlEscaped)</time>
                 <a class="text-button" href="\(removeURL)">Удалить</a>
+              </span>
+            </div>
+            """
+        }.joined()
+
+        let passwordsMarkup = passwords.prefix(120).map { entry in
+            let id = entry.id.uuidString.urlQueryEscaped
+            let openURL = "\(northStarSettingsScheme)://password-open?id=\(id)"
+            let editURL = "\(northStarSettingsScheme)://password-edit?id=\(id)"
+            let removeURL = "\(northStarSettingsScheme)://password-remove?id=\(id)"
+            let copyUsernameURL = "\(northStarSettingsScheme)://password-copy-username?id=\(id)"
+            let copyPasswordURL = "\(northStarSettingsScheme)://password-copy-password?id=\(id)"
+            let username = entry.username.isEmpty ? "логин не указан" : entry.username
+            return """
+            <div class="list-row bookmark-row">
+              <a class="row-main" href="\(openURL)">
+                \(SiteIconHTML.markup(url: entry.url, title: entry.title, cssClass: "site-icon"))
+                <span class="row-copy">
+                  <strong>\(entry.title.htmlEscaped)</strong>
+                  <small>\(entry.displayHost.htmlEscaped) · \(username.htmlEscaped)</small>
+                </span>
+              </a>
+              <span class="row-meta">
+                <time>\(DateDisplay.string(from: entry.updatedAt).htmlEscaped)</time>
+                <span class="action-row">
+                  <a class="text-button" href="\(editURL)">Изменить</a>
+                  <a class="text-button" href="\(copyUsernameURL)">Логин</a>
+                  <a class="text-button" href="\(copyPasswordURL)">Пароль</a>
+                  <a class="text-button danger-link" href="\(removeURL)">Удалить</a>
+                </span>
               </span>
             </div>
             """
@@ -10512,6 +11629,10 @@ private enum SettingsPage {
                     <h3>Валюты</h3>
                     <span>\(preferences.defaultCurrencySource.rawValue) → \(preferences.defaultCurrencyTarget.rawValue), ключ скрыт</span>
                   </button>
+                  <button class="overview-card" type="button" data-section="passwords">
+                    <h3>Пароли</h3>
+                    <span>\(passwords.count) зашифрованных записей</span>
+                  </button>
                   <button class="overview-card" type="button" data-section="bookmarks">
                     <h3>Закладки</h3>
                     <span>\(bookmarks.count) сохранённых страниц</span>
@@ -10680,6 +11801,42 @@ private enum SettingsPage {
                 </div>
                 <div class="list">
                   \(performanceMarkup.isEmpty ? "<p class=\"empty\">Данных о загрузках пока нет.</p>" : performanceMarkup)
+                </div>
+              </section>
+
+              <section class="panel" data-panel="passwords" aria-label="Пароли">
+                <div class="panel-head">
+                  <div>
+                    <h1>Пароли</h1>
+                    <p class="muted">Локальный vault с AES-GCM, ключом в Keychain и зашифрованным импортом/экспортом.</p>
+                  </div>
+                  <span class="action-row">
+                    <a class="button" href="\(northStarSettingsScheme)://password-add">Добавить</a>
+                    <a class="button" href="\(northStarSettingsScheme)://password-import">Импорт</a>
+                    <a class="button" href="\(northStarSettingsScheme)://password-export">Экспорт</a>
+                  </span>
+                </div>
+                \(passwordVaultStatusMarkup)
+                <div class="control-grid">
+                  <div class="setting-card">
+                    <h3>Autofill</h3>
+                    <p class="muted">Заполнение запускается вручную из меню «Инструменты» или контекстного меню страницы, чтобы сайт не получил секрет без вашего действия.</p>
+                  </div>
+                  <div class="setting-card">
+                    <h3>Экспорт с паролем</h3>
+                    <p class="muted">Файл .nsvault шифруется отдельно: для переноса между устройствами потребуется пароль экспорта.</p>
+                    <a class="button" href="\(northStarSettingsScheme)://password-generate">Сгенерировать пароль</a>
+                  </div>
+                </div>
+                <div class="list">
+                  \(passwordsMarkup.isEmpty ? "<p class=\"empty\">Паролей пока нет. Сохраните логин со страницы через меню «Инструменты» или добавьте запись вручную.</p>" : passwordsMarkup)
+                </div>
+                <div class="control-grid">
+                  <div class="setting-card">
+                    <h3>Очистить vault</h3>
+                    <p class="muted">Удаляет все локальные логины из зашифрованного хранилища.</p>
+                    <a class="button" href="\(northStarSettingsScheme)://password-clear">Очистить</a>
+                  </div>
                 </div>
               </section>
 
@@ -10935,6 +12092,16 @@ private func makeMainMenu(appDelegate: AppDelegate) -> NSMenu {
     toggleBarItem.keyEquivalentModifierMask = [.command, .shift]
     bookmarksItem.submenu = bookmarksMenu
     mainMenu.addItem(bookmarksItem)
+
+    let passwordsItem = NSMenuItem()
+    let passwordsMenu = NSMenu(title: "Пароли")
+    passwordsMenu.addItem(withTitle: "Показать пароли", action: #selector(BrowserViewController.showPasswordsCommand(_:)), keyEquivalent: "")
+    passwordsMenu.addItem(withTitle: "Заполнить логин", action: #selector(BrowserViewController.autofillPasswordCommand(_:)), keyEquivalent: "")
+    passwordsMenu.addItem(withTitle: "Сохранить логин страницы...", action: #selector(BrowserViewController.savePageLoginCommand(_:)), keyEquivalent: "")
+    passwordsMenu.addItem(.separator())
+    passwordsMenu.addItem(withTitle: "Сгенерировать пароль", action: #selector(BrowserViewController.generatePasswordCommand(_:)), keyEquivalent: "")
+    passwordsItem.submenu = passwordsMenu
+    mainMenu.addItem(passwordsItem)
 
     let viewItem = NSMenuItem()
     let viewMenu = NSMenu(title: "Вид")

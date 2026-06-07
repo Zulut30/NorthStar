@@ -34,6 +34,7 @@ The first version keeps the surface intentionally focused: one window, a polishe
 - Current-tab screenshots can be copied directly to the macOS clipboard from the toolbar.
 - Built-in currency converter using ExchangeRate-API, with toolbar access, visible-page price scanning, and right-click actions for selected prices.
 - Bookmarks with toolbar toggle, home-screen quick links, settings manager, and context menu (`⌘D`).
+- Encrypted local password manager with a Keychain-backed AES-GCM vault, manual autofill, password generation, and encrypted `.nsvault` import/export.
 - Reading mode that extracts article content into a clean, distraction-free view (`⇧⌥⌘R`).
 - Appearance controls include six color schemes, four interface designs, and five home-screen background styles.
 - Lightweight browser performance snapshot in Settings: tab count, loading tabs, app memory, average load time, and recent page timings.
@@ -61,6 +62,7 @@ Open settings with `Command-,`, the gear button in the toolbar, or `northstar://
 | Home screen | Soft Gradient, Solid, Fine Grid, Glow, Glass |
 | Ad blocking | Compatible, Strict |
 | Currency conversion | Default source currency, default target currency |
+| Password manager | Add/edit/copy logins, user-triggered autofill, encrypted import/export |
 | Default apps | Set NorthStar as the default web browser or PDF viewer |
 
 Settings are saved with `UserDefaults`, so the app remembers your preferred search engine, search region, search language, theme, color scheme, design density, home-screen background, ad blocking mode, default currency conversion choices, and tab layout between launches.
@@ -70,6 +72,12 @@ You can also switch the search engine, search region, and search language from t
 The Settings tab uses a sidebar with separate sections for search, appearance, browser behavior, currencies, performance, browsing history, and downloads. History and downloads have their own views with clear actions. The Browser section also has one-click default-app actions for `http`/`https` links and PDF files.
 
 The currency converter uses ExchangeRate-API's pair conversion endpoint. Use the toolbar converter for manual amounts, scan the visible page for a price, or select a price on a page, right-click, and choose `Конвертировать выделенную цену`; NorthStar will parse the amount and use your default target currency. The API key is stored locally outside the visible Settings UI.
+
+## Password Manager
+
+NorthStar now includes a first-pass local password manager. Saved credentials are encrypted with AES-GCM before being written to `~/Library/Application Support/NorthStar/PasswordVault.nsvault`; the vault key is generated locally and stored in macOS Keychain. The Settings tab has a Passwords section for adding, editing, copying, importing, exporting, and clearing entries.
+
+Autofill is user-triggered from the Tools menu, the Passwords menu, or the page context menu. This keeps pages from receiving saved credentials just because a form appeared. Encrypted exports use a separate password-protected `.nsvault` JSON container with PBKDF2-HMAC-SHA256 key derivation and AES-GCM payload encryption.
 
 ## Network Modes
 
@@ -187,6 +195,7 @@ Core pieces:
 - `BrowserTab` wraps a `WKWebView` and observes title, URL, progress, loading, and history state.
 - `AppPreferences` stores theme, search engine, and tab placement in `UserDefaults`.
 - `BrowserHistoryStore` and `DownloadHistoryStore` persist local history lists in `UserDefaults`.
+- `PasswordVaultStore` persists saved credentials as an AES-GCM encrypted local vault with the vault key held in macOS Keychain.
 - `PerformanceMonitor` records recent page load timings and snapshots current app memory only when settings are rendered.
 - `PageParser` extracts structured data from the active `WKWebView` DOM without crawling extra pages.
 - `NetworkProfile` creates the WebKit configuration for each mode before a page starts loading.
